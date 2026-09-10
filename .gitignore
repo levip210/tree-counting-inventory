@@ -1,0 +1,17 @@
+node_modules
+.next
+out
+data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+coverage
+prisma/dev.db*
+tsconfig.tsbuildinfo
+next-env.d.ts
