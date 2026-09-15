@@ -36,6 +36,7 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /prisma-node-modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/scripts/prisma-migrate.cjs ./scripts/prisma-migrate.cjs
 # Standalone does not include node_modules/.bin; copy the prisma shim and put it on PATH
 # so neither `npx prisma` nor a bare `prisma` lookup can fail at boot.
 RUN mkdir -p /app/data /app/node_modules/.bin /usr/local/bin
@@ -45,11 +46,21 @@ RUN test -f ./node_modules/prisma/build/index.js \
   && chmod +x ./node_modules/.bin/prisma ./node_modules/prisma/build/index.js \
   && printf '%s\n' '#!/bin/sh' 'exec node /app/node_modules/prisma/build/index.js "$@"' > /usr/local/bin/prisma \
   && chmod +x /usr/local/bin/prisma
+# Next standalone for a root app emits /app/server.js. Fail the image if it is nested.
+RUN if [ -f ./server.js ]; then \
+      echo "[build] standalone server.js at /app/server.js"; \
+    else \
+      echo "[build] server.js not at /app/server.js; searching:"; \
+      find /app -name server.js -print; \
+      ls -la /app; \
+      exit 1; \
+    fi
 ENV PATH="/app/node_modules/.bin:/usr/local/bin:${PATH}"
 ENV DATABASE_URL="file:/app/data/app.db"
-ENV HOSTNAME=0.0.0.0
-ENV PORT=3000
 EXPOSE 3000
-# Prisma CLI can keep the event loop open after migrate prints success, so `&& node server.js`
-# never runs. Time-box migrate, ignore a non-zero/timeout exit, then exec the HTTP server.
-CMD ["sh", "-c", "timeout -k 5 60 node ./node_modules/prisma/build/index.js migrate deploy || true; exec node server.js"]
+# Prisma CLI often does not exit after a successful SQLite migrate, so a raw
+# `node prisma ... migrate deploy && node server.js` never reaches the server
+# (Railway SUCCESS + 502). prisma-migrate.cjs always returns, then exec replaces
+# the shell with Next so it is PID 1. HOSTNAME is set inline because Railway
+# injects a container hostname that would otherwise override ENV HOSTNAME.
+CMD ["sh", "-c", "node ./scripts/prisma-migrate.cjs; HOSTNAME=0.0.0.0 exec node server.js"]
