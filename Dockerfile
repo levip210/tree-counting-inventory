@@ -35,25 +35,18 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/scripts/prisma-migrate.cjs ./scripts/prisma-migrate.cjs
-# Generated Prisma client engines. This is a subpath copy and does not replace node_modules.
+# Generated client engines only — a subpath, not a replacement of node_modules.
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-# Keep Prisma CLI out of ./node_modules replacement: a directory COPY onto
-# ./node_modules wipes Next standalone packages and the HTTP server never starts.
-COPY --from=builder /prisma-node-modules /opt/prisma/node_modules
-# Merge Prisma packages into standalone node_modules without deleting Next/react/etc.
-RUN mkdir -p /app/data /app/node_modules/.bin /usr/local/bin \
-  && cp -a /opt/prisma/node_modules/. /app/node_modules/ \
-  && ln -sf /opt/prisma/node_modules/prisma/build/index.js /app/node_modules/.bin/prisma \
-  && printf '%s\n' '#!/bin/sh' 'exec node /opt/prisma/node_modules/prisma/build/index.js "$@"' > /usr/local/bin/prisma \
-  && chmod +x /usr/local/bin/prisma /app/node_modules/.bin/prisma \
+# Never COPY this tree onto ./node_modules: that wipes Next standalone deps (502).
+COPY --from=builder /prisma-node-modules /opt/prisma-node_modules
+RUN mkdir -p /app/data \
   && test -f /app/server.js \
-  && test -f /opt/prisma/node_modules/prisma/build/index.js \
-  && node -e "require('next'); require('react'); console.log('[build] standalone runtime ok')"
-ENV PATH="/app/node_modules/.bin:/usr/local/bin:${PATH}"
+  && test -f /app/node_modules/next/package.json \
+  && test -f /opt/prisma-node_modules/prisma/build/index.js \
+  && node -e "require('next/package.json'); require('next/dist/server/next.js'); console.log('[build] standalone next ok')"
 ENV DATABASE_URL="file:/app/data/app.db"
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 EXPOSE 3000
-# Time-box migrate (Prisma CLI can hang after success), then exec Next as PID 1.
-# HOSTNAME is set inline because Railway injects a container hostname.
-CMD ["sh", "-c", "timeout -k 5 60 node /opt/prisma/node_modules/prisma/build/index.js migrate deploy || true; HOSTNAME=0.0.0.0 exec node server.js"]
+# prisma-migrate.cjs always exits; HOSTNAME inline because Railway injects a hostname.
+CMD ["sh", "-c", "node ./scripts/prisma-migrate.cjs; HOSTNAME=0.0.0.0 exec node server.js"]

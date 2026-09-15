@@ -10,15 +10,13 @@
  * SUCCESS with nothing listening → 502.
  */
 const { spawn } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 
-const cliCandidates = [
-  "/opt/prisma/node_modules/prisma/build/index.js",
-  path.join(process.cwd(), "node_modules", "prisma", "build", "index.js"),
-];
-const cli = cliCandidates.find((file) => require("fs").existsSync(file));
-if (!cli) {
-  console.error("[start] prisma CLI not found at", cliCandidates.join(" or "));
+const PRISMA_ROOT = "/opt/prisma-node_modules";
+const cli = path.join(PRISMA_ROOT, "prisma", "build", "index.js");
+if (!fs.existsSync(cli)) {
+  console.error("[start] prisma CLI not found at", cli);
   process.exit(1);
 }
 const successRe =
@@ -28,7 +26,11 @@ console.log("[start] prisma migrate deploy");
 
 const child = spawn(process.execPath, [cli, "migrate", "deploy"], {
   stdio: ["ignore", "pipe", "pipe"],
-  env: process.env,
+  env: {
+    ...process.env,
+    // /opt/prisma-node_modules is a node_modules-shaped tree (prisma, c12, effect, …).
+    NODE_PATH: [PRISMA_ROOT, process.env.NODE_PATH].filter(Boolean).join(path.delimiter),
+  },
 });
 
 let buf = "";
