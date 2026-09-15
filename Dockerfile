@@ -35,15 +35,22 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/scripts/prisma-migrate.cjs ./scripts/prisma-migrate.cjs
+COPY --from=builder /app/scripts/ensure-sqlite-schema.cjs ./scripts/ensure-sqlite-schema.cjs
 # Generated client engines only — a subpath, not a replacement of node_modules.
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 # Never COPY this tree onto ./node_modules: that wipes Next standalone deps (502).
+# Nested node_modules is required: Prisma 6 ESM imports (c12) ignore NODE_PATH.
 COPY --from=builder /prisma-node-modules /opt/prisma-node_modules
 RUN mkdir -p /app/data \
   && test -f /app/server.js \
   && test -f /app/node_modules/next/package.json \
-  && test -f /opt/prisma-node_modules/prisma/build/index.js \
-  && node -e "require('next/package.json'); require('next/dist/server/next.js'); console.log('[build] standalone next ok')"
+  && test -f /opt/prisma-node_modules/node_modules/prisma/build/index.js \
+  && test -f /opt/prisma-node_modules/node_modules/c12/package.json \
+  && node -e "require('next/package.json'); require('next/dist/server/next.js'); console.log('[build] standalone next ok')" \
+  && node --input-type=module -e "import('file:///opt/prisma-node_modules/node_modules/@prisma/config/dist/index.js').then(() => console.log('[build] prisma esm deps ok'))" \
+  && DATABASE_URL="file:/tmp/build-migrate.db" PRISMA_NODE_MODULES=/opt/prisma-node_modules/node_modules \
+       node ./scripts/prisma-migrate.cjs \
+  && rm -f /tmp/build-migrate.db /tmp/build-migrate.db-journal
 ENV DATABASE_URL="file:/app/data/app.db"
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
