@@ -47,6 +47,9 @@ RUN test -f ./node_modules/prisma/build/index.js \
   && chmod +x /usr/local/bin/prisma
 ENV PATH="/app/node_modules/.bin:/usr/local/bin:${PATH}"
 ENV DATABASE_URL="file:/app/data/app.db"
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
 EXPOSE 3000
-# Never use npx/bare prisma here — invoke the CLI JS directly (migrate, then server).
-CMD ["sh", "-c", "node ./node_modules/prisma/build/index.js migrate deploy && node server.js"]
+# Prisma CLI can keep the event loop open after migrate prints success, so `&& node server.js`
+# never runs. Time-box migrate, ignore a non-zero/timeout exit, then exec the HTTP server.
+CMD ["sh", "-c", "timeout -k 5 60 node ./node_modules/prisma/build/index.js migrate deploy || true; exec node server.js"]
