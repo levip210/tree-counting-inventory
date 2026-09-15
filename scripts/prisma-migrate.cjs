@@ -12,7 +12,15 @@
 const { spawn } = require("child_process");
 const path = require("path");
 
-const cli = path.join(process.cwd(), "node_modules", "prisma", "build", "index.js");
+const cliCandidates = [
+  "/opt/prisma/node_modules/prisma/build/index.js",
+  path.join(process.cwd(), "node_modules", "prisma", "build", "index.js"),
+];
+const cli = cliCandidates.find((file) => require("fs").existsSync(file));
+if (!cli) {
+  console.error("[start] prisma CLI not found at", cliCandidates.join(" or "));
+  process.exit(1);
+}
 const successRe =
   /No pending migrations to apply|All migrations have been successfully applied|The following migration\(s\) have been applied/i;
 
