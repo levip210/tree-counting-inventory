@@ -44,6 +44,8 @@ model Farm {
 model TreeSize {
   id           String              @id @default(cuid())
   name         String
+  /// Optional #RRGGBB for counting labels. Null/empty means no color.
+  color        String?
   displayOrder Int                 @default(0)
   active       Boolean             @default(true)
   createdAt    DateTime            @default(now())

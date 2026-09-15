@@ -27,12 +27,14 @@ type CountsMod = typeof import("../src/server/counts");
 type PinsMod = typeof import("../src/server/pins");
 type SecurityMod = typeof import("../src/lib/security");
 type ConstantsMod = typeof import("../src/lib/constants");
+type SizeColorMod = typeof import("../src/lib/size-color");
 
 let setup: SetupMod;
 let counts: CountsMod;
 let pins: PinsMod;
 let security: SecurityMod;
 let constants: ConstantsMod;
+let sizeColor: SizeColorMod;
 
 test("load modules against temp database", async () => {
   setup = await import("../src/server/setup");
@@ -40,6 +42,7 @@ test("load modules against temp database", async () => {
   pins = await import("../src/server/pins");
   security = await import("../src/lib/security");
   constants = await import("../src/lib/constants");
+  sizeColor = await import("../src/lib/size-color");
   assert.ok(setup.createFirstAdmin);
 });
 
@@ -187,6 +190,25 @@ test("active PINs cannot collide across admin and counter accounts", async () =>
   assert.equal(await pins.pinInUse("9999"), true);
   const match = await pins.matchPin("2468");
   assert.equal(match?.kind, "admin");
+});
+
+test("size color accepts any hex and rejects junk", () => {
+  assert.equal(sizeColor.normalizeSizeColor("#3d8a5c"), "#3d8a5c");
+  assert.equal(sizeColor.normalizeSizeColor("e0b042"), "#e0b042");
+  assert.equal(sizeColor.normalizeSizeColor("#ABC"), "#aabbcc");
+  assert.equal(sizeColor.normalizeSizeColor(""), null);
+  assert.equal(sizeColor.normalizeSizeColor("not-a-color"), null);
+  assert.equal(sizeColor.contrastInk("#FFFFFF"), "#1b1710");
+  assert.equal(sizeColor.contrastInk("#21543a"), "#f4efe3");
+});
+
+test("tree sizes store optional color without touching grades", async () => {
+  const size = await prisma.treeSize.findFirstOrThrow();
+  const grade = await prisma.treeGrade.findFirstOrThrow();
+  await prisma.treeSize.update({ where: { id: size.id }, data: { color: "#e0b042" } });
+  const again = await prisma.treeSize.findUniqueOrThrow({ where: { id: size.id } });
+  assert.equal(again.color, "#e0b042");
+  assert.equal("color" in grade, false);
 });
 
 test("cleanup temp database", async () => {

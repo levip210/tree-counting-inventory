@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { ACTIONS, DOUBLE_TAP_MS } from "@/lib/constants";
 import { api, exactLocalTimestamp, newId } from "@/lib/client";
-import { allPending, pendingCount, queueCount, removePending, type PendingCount } from "@/lib/offline";
+import { allPending, cacheCatalog, pendingCount, queueCount, readCachedCatalog, removePending, type PendingCount } from "@/lib/offline";
 import { playFeedback } from "@/lib/feedback";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { SizeNameChip } from "./SizeColor";
 
-type Cat = { id: string; name: string; displayOrder: number; active: boolean };
+type Cat = { id: string; name: string; displayOrder: number; active: boolean; color?: string | null };
 type Farm = Cat;
 type Progress = {
   farmId: string;
@@ -40,7 +41,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   const [startedAt, setStartedAt] = useState<string>("");
   const [totals, setTotals] = useState<Record<string, number>>({});
   const [sessionTotal, setSessionTotal] = useState(0);
-  const [last, setLast] = useState<string>("—");
+  const [last, setLast] = useState<{ size: string; grade: string; color: string | null } | null>(null);
   const [online, setOnline] = useState(true);
   const [pending, setPending] = useState(0);
   const [flashKey, setFlashKey] = useState<string | null>(null);
@@ -69,11 +70,18 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   }, []);
 
   useEffect(() => {
+    const cached = readCachedCatalog<Catalog>();
+    if (cached) {
+      setCatalog(cached);
+      setSound(cached.soundEnabled);
+      setVibe(cached.vibrationEnabled);
+    }
     api<Catalog>("/api/catalog")
       .then((c) => {
         setCatalog(c);
         setSound(c.soundEnabled);
         setVibe(c.vibrationEnabled);
+        cacheCatalog(c);
       })
       .catch(() => undefined);
     pendingCount().then(setPending);
@@ -98,7 +106,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     setStartedAt(ts);
     setTotals({});
     setSessionTotal(0);
-    setLast("—");
+    setLast(null);
     undoStack.current = [];
     sessionStorage.setItem(storageKey, JSON.stringify({ id, ts, farmId: nextFarm?.id || null }));
     void fetch("/api/sessions", {
@@ -206,7 +214,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     undoStack.current.push(count.clientSyncId);
     setTotals((t) => ({ ...t, [key]: (t[key] || 0) + 1 }));
     setSessionTotal((n) => n + 1);
-    setLast(`${size.name} ${grade.name}`);
+    setLast({ size: size.name, grade: grade.name, color: size.color || null });
     flash(true, key);
     setPending((n) => n + 1);
     void flush();
@@ -329,7 +337,17 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
       ) : null}
 
       <div className="last-count">
-        <div>Last counted: <b>{last}</b></div>
+        <div className="row" style={{ gap: 8 }}>
+          Last counted:
+          {last ? (
+            <>
+              <SizeNameChip name={last.size} color={last.color} compact />
+              <b>{last.grade}</b>
+            </>
+          ) : (
+            <b>—</b>
+          )}
+        </div>
         <div>Visible session total: <b>{sessionTotal}</b></div>
       </div>
 
@@ -349,21 +367,26 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
             <tbody>
               {sizes.map((s) => (
                 <tr key={s.id}>
-                  <td className="size-lab">{s.name}</td>
+                  <td className="size-lab">
+                    <SizeNameChip name={s.name} color={s.color} />
+                  </td>
                   {grades.map((g) => {
                     const key = cellKey(s.id, g.id);
                     return (
                       <td key={g.id}>
                         <button
                           type="button"
-                          className={`count-btn ${flashKey === key ? "flash" : ""}`}
+                          className={`count-btn ${s.color ? "has-size-color" : ""} ${flashKey === key ? "flash" : ""}`}
+                          style={s.color ? ({ "--size-color": s.color } as CSSProperties) : undefined}
                           onPointerDown={(e) => {
                             e.preventDefault();
                             void tap(s, g);
                           }}
                         >
                           <span className="qty">{totals[key] || 0}</span>
-                          <small>{s.name} {g.name}</small>
+                          <small>
+                            <SizeNameChip name={s.name} color={s.color} compact /> {g.name}
+                          </small>
                         </button>
                       </td>
                     );
@@ -377,7 +400,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
 
       <div className="session-bar">
         <button className="btn cream" type="button" onClick={() => void undo()}>Undo last</button>
-        <button className="btn cream" type="button" onClick={() => { setTotals({}); setSessionTotal(0); setLast("—"); }}>
+        <button className="btn cream" type="button" onClick={() => { setTotals({}); setSessionTotal(0); setLast(null); }}>
           Reset visible totals
         </button>
         <button className="btn cream" type="button" onClick={() => startSession(farm)}>Start counting</button>
