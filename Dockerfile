@@ -36,9 +36,17 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /prisma-node-modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
-RUN mkdir -p /app/data \
-  && test -f ./node_modules/prisma/build/index.js
+# Standalone does not include node_modules/.bin; copy the prisma shim and put it on PATH
+# so neither `npx prisma` nor a bare `prisma` lookup can fail at boot.
+RUN mkdir -p /app/data /app/node_modules/.bin /usr/local/bin
+COPY --from=builder /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
+RUN test -f ./node_modules/prisma/build/index.js \
+  && test -f ./node_modules/.bin/prisma \
+  && chmod +x ./node_modules/.bin/prisma ./node_modules/prisma/build/index.js \
+  && printf '%s\n' '#!/bin/sh' 'exec node /app/node_modules/prisma/build/index.js "$@"' > /usr/local/bin/prisma \
+  && chmod +x /usr/local/bin/prisma
+ENV PATH="/app/node_modules/.bin:/usr/local/bin:${PATH}"
 ENV DATABASE_URL="file:/app/data/app.db"
 EXPOSE 3000
-# Do not use `npx prisma` / PATH `prisma` — standalone has no node_modules/.bin.
+# Never use npx/bare prisma here — invoke the CLI JS directly (migrate, then server).
 CMD ["sh", "-c", "node ./node_modules/prisma/build/index.js migrate deploy && node server.js"]
