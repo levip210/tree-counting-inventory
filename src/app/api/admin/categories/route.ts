@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { errorJson, json } from "@/lib/session";
 import { sessionFromRequest } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
+import { normalizeSizeColor } from "@/lib/size-color";
 
 export const runtime = "nodejs";
 
@@ -40,9 +41,14 @@ export async function POST(req: NextRequest) {
   if (!name) return errorJson("Name is required.", 400);
   const now = new Date();
   if (kind === "size") {
+    let color: string | null = null;
+    if (body?.color != null && String(body.color).trim() !== "") {
+      color = normalizeSizeColor(body.color);
+      if (!color) return errorJson("Color must be a hex value like #3D8A5C.", 400);
+    }
     const max = await prisma.treeSize.aggregate({ _max: { displayOrder: true } });
     const item = await prisma.treeSize.create({
-      data: { name, displayOrder: (max._max.displayOrder ?? -1) + 1, active: true, updatedAt: now },
+      data: { name, color, displayOrder: (max._max.displayOrder ?? -1) + 1, active: true, updatedAt: now },
     });
     return json({ ok: true, item });
   }
@@ -74,9 +80,18 @@ export async function PATCH(req: NextRequest) {
       ]);
       return json({ ok: true });
     }
-    const data: { name?: string; active?: boolean; updatedAt: Date } = { updatedAt: new Date() };
+    const data: { name?: string; active?: boolean; color?: string | null; updatedAt: Date } = { updatedAt: new Date() };
     if (typeof body.name === "string" && body.name.trim()) data.name = body.name.trim();
     if (typeof body.active === "boolean") data.active = body.active;
+    if ("color" in body) {
+      if (body.color == null || String(body.color).trim() === "") {
+        data.color = null;
+      } else {
+        const color = normalizeSizeColor(body.color);
+        if (!color) return errorJson("Color must be a hex value like #3D8A5C.", 400);
+        data.color = color;
+      }
+    }
     const item = await prisma.treeSize.update({ where: { id }, data });
     return json({ ok: true, item });
   }

@@ -67,3 +67,22 @@ export async function removePending(ids: string[]): Promise<void> {
 export async function pendingCount(): Promise<number> {
   return (await allPending()).length;
 }
+
+const CATALOG_KEY = "ptf-catalog-v1";
+
+export function cacheCatalog(catalog: unknown): void {
+  try {
+    localStorage.setItem(CATALOG_KEY, JSON.stringify(catalog));
+  } catch {
+    /* private mode / quota */
+  }
+}
+
+export function readCachedCatalog<T>(): T | null {
+  try {
+    const raw = localStorage.getItem(CATALOG_KEY);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}

@@ -69,7 +69,9 @@ You do **not** have to finish it before exploring. Check items off as you go, or
 
 Suggested (editable): 5–6, 6–7, 7–8, 8–9, 9–10, 10+.
 
-Add, rename, deactivate, reactivate, reorder. If a size was used in counts, delete becomes a **soft deactivate**.
+Add, rename, deactivate, reactivate, reorder. Optional **color** — use the color picker or paste any hex (`#RRGGBB`). Counting tablets show that color on size labels so crew can glance at color instead of reading the name. Empty means no color. Grades do not have colors.
+
+If a size was used in counts, delete becomes a **soft deactivate**.
 
 ## 7. Add and confirm tree grades
 

@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { AdminShell } from "@/components/AdminShell";
+import { SizeNameChip } from "@/components/SizeColor";
 import { api } from "@/lib/client";
 
-type Cat = { id: string; name: string };
+type Cat = { id: string; name: string; color?: string | null };
 type Row = { farmId: string; sizeId: string; gradeId: string; quantity: number };
 type Progress = { farmId: string; sizeId: string; gradeId: string; starting: number; received: number; notYetReceived: number; exceeded: boolean };
 
@@ -72,7 +73,7 @@ export default function InventoryPage() {
           <tbody>
             {sizes.map((s) => (
               <tr key={s.id}>
-                <td>{s.name}</td>
+                <td><SizeNameChip name={s.name} color={s.color} /></td>
                 {grades.map((g) => {
                   const p = prog(s.id, g.id);
                   return (
