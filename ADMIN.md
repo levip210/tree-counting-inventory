@@ -153,7 +153,11 @@ On the counting screen, **Undo last** voids the most recent tap from **this brow
 
 Filter by action, date, size/grade/farm text, and voided rows.
 
-You can **void** a mis-tap (with a reason) or add a **note**. Totals ignore voided rows.
+Select one or more rows (checkboxes, or **Select all** for the visible list) and tap **Delete selected**. You get **one** confirmation — **Delete N counts?** **Cancel** leaves them alone. A reason is not required.
+
+You can still **Void** a single row the same way: confirm, then it is voided. **Cancel does not void.**
+
+Or add a **Note**. Totals ignore voided rows.
 
 This screen never shows who counted.
 
