@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { errorJson, json } from "@/lib/session";
 import { sessionFromRequest } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
+import { countActiveFarmCounts, deleteOrDeactivateFarm } from "@/server/farms";
 
 export const runtime = "nodejs";
 
@@ -20,7 +21,7 @@ export async function GET(req: NextRequest) {
       .filter((f) => !q || f.name.toLowerCase().includes(q) || f.id.toLowerCase().includes(q))
       .map(async (f) => ({
         ...f,
-        countTotal: await prisma.countRecord.count({ where: { farmId: f.id } }),
+        countTotal: await countActiveFarmCounts(f.id),
       })),
   );
   return json({ farms: withCounts });
@@ -61,9 +62,9 @@ export async function PATCH(req: NextRequest) {
 
   const data: { name?: string; active?: boolean; updatedAt: Date } = { updatedAt: new Date() };
   if (typeof body.name === "string" && body.name.trim() && body.name.trim() !== farm.name) {
-    const used = await prisma.countRecord.count({ where: { farmId: id } });
+    const used = await countActiveFarmCounts(id);
     if (used > 0 && !body.confirmRename) {
-      return json({ needsConfirm: true, message: `This farm has ${used} saved counts. Rename anyway? The old name stays on past counts.` }, 409);
+      return json({ needsConfirm: true, message: `This farm has ${used} active saved counts. Rename anyway? The old name stays on past counts.` }, 409);
     }
     data.name = body.name.trim();
   }
@@ -75,12 +76,8 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   if (!(await requireAdmin(req))) return errorJson("Admin sign-in required.", 401);
   const id = new URL(req.url).searchParams.get("id") || "";
-  const used = await prisma.countRecord.count({ where: { farmId: id } });
-  if (used > 0) {
-    await prisma.farm.update({ where: { id }, data: { active: false, updatedAt: new Date() } });
-    return json({ ok: true, deactivated: true, message: "Farm has saved counts, so it was deactivated instead of deleted." });
-  }
-  await prisma.startingInventory.deleteMany({ where: { farmId: id } });
-  await prisma.farm.delete({ where: { id } });
-  return json({ ok: true, deleted: true });
+  if (!id) return errorJson("Farm id required.", 400);
+  const result = await deleteOrDeactivateFarm(id);
+  if (!result.ok) return errorJson(result.error, result.status);
+  return json(result);
 }

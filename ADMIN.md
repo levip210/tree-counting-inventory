@@ -59,9 +59,9 @@ You do **not** have to finish it before exploring. Check items off as you go, or
 - **Add farm** — name only. The app assigns FarmID, DisplayOrder, Active, CreatedAt, UpdatedAt.
 - **Search** — filter by name or id.
 - **Up / Down** — display order (Yard Receiving farm list).
-- **Rename** — if the farm already has counts, you get a warning. Past counts keep the snapshot name from the moment they were tapped.
+- **Rename** — if the farm already has **active** (non-voided) counts, you get a warning. Past counts keep the snapshot name from the moment they were tapped. Voided history does not trigger the warning.
 - **Deactivate / Reactivate** — only **active** farms appear on Yard Receiving.
-- **Delete** — refused when the farm has saved counts; the farm is deactivated instead.
+- **Delete** — refused when the farm has **active** saved counts; the farm is deactivated instead. After all history for a farm is voided, Delete removes the farm (and leftover voided rows for that farm only). Starting inventory is also cleared on a full delete.
 
 ## 6. Add and confirm tree sizes
 
