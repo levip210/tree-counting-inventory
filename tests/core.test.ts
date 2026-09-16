@@ -202,6 +202,59 @@ test("size color accepts any hex and rejects junk", () => {
   assert.equal(sizeColor.contrastInk("#21543a"), "#f4efe3");
 });
 
+test("parseVoidIds accepts a single id or a batch and rejects empty/too-large lists", () => {
+  assert.deepEqual(counts.parseVoidIds({ id: "abc" }), ["abc"]);
+  assert.deepEqual(counts.parseVoidIds({ ids: ["a", "b", "a", ""] }), ["a", "b"]);
+  assert.equal("error" in counts.parseVoidIds({ ids: [] }), true);
+  assert.equal("error" in counts.parseVoidIds({}), true);
+  const tooMany = Array.from({ length: 201 }, (_, i) => `id-${i}`);
+  const over = counts.parseVoidIds({ ids: tooMany });
+  assert.equal("error" in over, true);
+});
+
+test("voidCounts soft-voids a batch without requiring a reason", async () => {
+  const size = await prisma.treeSize.findFirstOrThrow();
+  const grade = await prisma.treeGrade.findFirstOrThrow();
+  const farm = await prisma.farm.findFirstOrThrow();
+  const session = { role: "admin" as const, access: "admin" as const, name: "Levi", adminId: "x" };
+  const payloads = [1, 2, 3].map((n) => ({
+    clientSyncId: `batch-${n}`,
+    timestampLocal: `2026-09-10T08:0${n}:02.345-04:00`,
+    action: constants.ACTIONS.YARD,
+    farmId: farm.id,
+    farmName: farm.name,
+    sizeId: size.id,
+    sizeName: size.name,
+    gradeId: grade.id,
+    gradeName: grade.name,
+    quantity: 1,
+    sessionId: "session-batch",
+    sessionStartedAt: new Date().toISOString(),
+  }));
+  await counts.syncCounts(session, payloads);
+  const rows = await prisma.countRecord.findMany({ where: { sessionId: "session-batch" }, orderBy: { timestampLocal: "asc" } });
+  assert.equal(rows.length, 3);
+
+  const first = await counts.voidCounts([rows[0]!.id]);
+  assert.equal(first.ok, true);
+  if (first.ok) {
+    assert.equal(first.voided, 1);
+    assert.equal(first.requested, 1);
+  }
+  const again = await counts.voidCounts([rows[0]!.id, rows[1]!.id, rows[2]!.id]);
+  assert.equal(again.ok, true);
+  if (again.ok) {
+    assert.equal(again.voided, 2);
+    assert.equal(again.requested, 3);
+  }
+  const after = await prisma.countRecord.findMany({ where: { sessionId: "session-batch" } });
+  assert.equal(after.every((row) => row.voidedAt != null), true);
+  assert.equal(after.every((row) => row.voidReason === "Admin correction"), true);
+
+  const empty = await counts.voidCounts([]);
+  assert.equal(empty.ok, false);
+});
+
 test("tree sizes store optional color without touching grades", async () => {
   const size = await prisma.treeSize.findFirstOrThrow();
   const grade = await prisma.treeGrade.findFirstOrThrow();

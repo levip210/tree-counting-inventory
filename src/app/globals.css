@@ -385,6 +385,27 @@ table.data th, table.data td {
   vertical-align: top;
 }
 table.data th { background: #efe6d2; font-size: 0.86rem; }
+table.data tr.selected { background: #fff4d6; }
+table.data .check-col { width: 48px; }
+table.data input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--pine-700);
+  cursor: pointer;
+}
+.history-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--cream);
+  padding: 8px 0;
+}
+.history-actions .count-selected { font-weight: 700; color: var(--muted); }
 
 .flash-overlay {
   pointer-events: none;

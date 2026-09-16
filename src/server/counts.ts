@@ -164,6 +164,11 @@ export async function syncCounts(session: SessionPayload, rawCounts: unknown[]) 
   return { accepted, rejected };
 }
 
+function voidReasonText(reason: string | undefined, fallback: string) {
+  const trimmed = String(reason || "").trim();
+  return trimmed || fallback;
+}
+
 export async function voidCount(idOrSync: { id?: string; clientSyncId?: string }, reason?: string) {
   const where = idOrSync.id
     ? { id: idOrSync.id }
@@ -176,9 +181,30 @@ export async function voidCount(idOrSync: { id?: string; clientSyncId?: string }
   if (row.voidedAt) return { ok: true as const, already: true, id: row.id };
   const updated = await prisma.countRecord.update({
     where: { id: row.id },
-    data: { voidedAt: new Date(), voidReason: reason || "Undo last count" },
+    data: { voidedAt: new Date(), voidReason: voidReasonText(reason, "Undo last count") },
   });
   return { ok: true as const, already: false, id: updated.id };
+}
+
+const MAX_BATCH_VOID = 200;
+
+export function parseVoidIds(body: { id?: unknown; ids?: unknown }): string[] | { error: string } {
+  const raw = Array.isArray(body.ids) ? body.ids : body.id != null && body.id !== "" ? [body.id] : [];
+  const unique = [...new Set(raw.map((id) => String(id || "").trim()).filter(Boolean))];
+  if (unique.length === 0) return { error: "No counts selected." };
+  if (unique.length > MAX_BATCH_VOID) return { error: "Too many counts selected." };
+  return unique;
+}
+
+export async function voidCounts(ids: string[], reason?: string) {
+  const unique = [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))];
+  if (unique.length === 0) return { ok: false as const, error: "No counts selected." };
+  if (unique.length > MAX_BATCH_VOID) return { ok: false as const, error: "Too many counts selected." };
+  const result = await prisma.countRecord.updateMany({
+    where: { id: { in: unique }, voidedAt: null },
+    data: { voidedAt: new Date(), voidReason: voidReasonText(reason, "Admin correction") },
+  });
+  return { ok: true as const, voided: result.count, requested: unique.length };
 }
 
 export function publicCount(row: {

@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { errorJson, json } from "@/lib/session";
 import { sessionFromRequest } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
-import { publicCount, voidCount } from "@/server/counts";
+import { parseVoidIds, publicCount, voidCounts } from "@/server/counts";
 
 export const runtime = "nodejs";
 
@@ -46,9 +46,11 @@ export async function POST(req: NextRequest) {
   if (!session || session.role !== "admin") return errorJson("Admin sign-in required.", 401);
   const body = await req.json().catch(() => null);
   if (body?.action === "void") {
-    const result = await voidCount({ id: body.id }, String(body.reason || "Admin correction"));
-    if (!result.ok) return errorJson(result.error, 404);
-    return json({ ok: true, already: result.already, id: result.id });
+    const ids = parseVoidIds(body);
+    if ("error" in ids) return errorJson(ids.error, 400);
+    const result = await voidCounts(ids, body.reason);
+    if (!result.ok) return errorJson(result.error, 400);
+    return json({ ok: true, voided: result.voided, requested: result.requested });
   }
   if (body?.action === "note") {
     const row = await prisma.countRecord.update({
