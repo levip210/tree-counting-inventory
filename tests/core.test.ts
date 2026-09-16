@@ -24,6 +24,7 @@ const prisma = new PrismaClient({ datasources: { db: { url: `file:${dbPath}` } }
 
 type SetupMod = typeof import("../src/server/setup");
 type CountsMod = typeof import("../src/server/counts");
+type FarmsMod = typeof import("../src/server/farms");
 type PinsMod = typeof import("../src/server/pins");
 type SecurityMod = typeof import("../src/lib/security");
 type ConstantsMod = typeof import("../src/lib/constants");
@@ -31,6 +32,7 @@ type SizeColorMod = typeof import("../src/lib/size-color");
 
 let setup: SetupMod;
 let counts: CountsMod;
+let farmsMod: FarmsMod;
 let pins: PinsMod;
 let security: SecurityMod;
 let constants: ConstantsMod;
@@ -39,6 +41,7 @@ let sizeColor: SizeColorMod;
 test("load modules against temp database", async () => {
   setup = await import("../src/server/setup");
   counts = await import("../src/server/counts");
+  farmsMod = await import("../src/server/farms");
   pins = await import("../src/server/pins");
   security = await import("../src/lib/security");
   constants = await import("../src/lib/constants");
@@ -253,6 +256,137 @@ test("voidCounts soft-voids a batch without requiring a reason", async () => {
 
   const empty = await counts.voidCounts([]);
   assert.equal(empty.ok, false);
+});
+
+test("farm delete ignores voided counts and still deactivates farms with active counts", async () => {
+  const size = await prisma.treeSize.findFirstOrThrow();
+  const grade = await prisma.treeGrade.findFirstOrThrow();
+  const session = { role: "admin" as const, access: "admin" as const, name: "Levi", adminId: "x" };
+
+  const voidedFarm = await prisma.farm.create({
+    data: { name: "Voided-only farm", displayOrder: 90, active: true, updatedAt: new Date() },
+  });
+  const activeFarm = await prisma.farm.create({
+    data: { name: "Active-count farm", displayOrder: 91, active: true, updatedAt: new Date() },
+  });
+  const otherFarm = await prisma.farm.create({
+    data: { name: "Keep this farm", displayOrder: 92, active: true, updatedAt: new Date() },
+  });
+
+  await prisma.startingInventory.create({
+    data: { farmId: voidedFarm.id, sizeId: size.id, gradeId: grade.id, quantity: 12, updatedAt: new Date() },
+  });
+
+  await counts.syncCounts(session, [
+    {
+      clientSyncId: "void-farm-1",
+      timestampLocal: "2026-09-16T08:01:02.345-04:00",
+      action: constants.ACTIONS.YARD,
+      farmId: voidedFarm.id,
+      farmName: voidedFarm.name,
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      quantity: 1,
+      sessionId: "session-void-farm",
+      sessionStartedAt: new Date().toISOString(),
+    },
+    {
+      clientSyncId: "active-farm-1",
+      timestampLocal: "2026-09-16T08:02:02.345-04:00",
+      action: constants.ACTIONS.YARD,
+      farmId: activeFarm.id,
+      farmName: activeFarm.name,
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      quantity: 1,
+      sessionId: "session-active-farm",
+      sessionStartedAt: new Date().toISOString(),
+    },
+    {
+      clientSyncId: "other-farm-1",
+      timestampLocal: "2026-09-16T08:03:02.345-04:00",
+      action: constants.ACTIONS.YARD,
+      farmId: otherFarm.id,
+      farmName: otherFarm.name,
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      quantity: 1,
+      sessionId: "session-other-farm",
+      sessionStartedAt: new Date().toISOString(),
+    },
+  ]);
+
+  const voidedRow = await prisma.countRecord.findFirstOrThrow({ where: { farmId: voidedFarm.id } });
+  await counts.voidCounts([voidedRow.id]);
+
+  assert.equal(await farmsMod.countActiveFarmCounts(voidedFarm.id), 0);
+  assert.equal(await farmsMod.countActiveFarmCounts(activeFarm.id), 1);
+  assert.equal(await prisma.countRecord.count({ where: { farmId: voidedFarm.id } }), 1);
+
+  const voidedDelete = await farmsMod.deleteOrDeactivateFarm(voidedFarm.id);
+  assert.equal(voidedDelete.ok, true);
+  if (voidedDelete.ok) assert.equal("deleted" in voidedDelete && voidedDelete.deleted, true);
+  assert.equal(await prisma.farm.findUnique({ where: { id: voidedFarm.id } }), null);
+  assert.equal(await prisma.countRecord.count({ where: { farmId: voidedFarm.id } }), 0);
+  assert.equal(await prisma.startingInventory.count({ where: { farmId: voidedFarm.id } }), 0);
+  assert.equal(await prisma.countSession.findUnique({ where: { id: "session-void-farm" } }), null);
+
+  const activeDelete = await farmsMod.deleteOrDeactivateFarm(activeFarm.id);
+  assert.equal(activeDelete.ok, true);
+  if (activeDelete.ok) {
+    assert.equal("deactivated" in activeDelete && activeDelete.deactivated, true);
+  }
+  const stillThere = await prisma.farm.findUniqueOrThrow({ where: { id: activeFarm.id } });
+  assert.equal(stillThere.active, false);
+  assert.equal(await prisma.countRecord.count({ where: { farmId: activeFarm.id, voidedAt: null } }), 1);
+  assert.equal(await prisma.farm.findUnique({ where: { id: otherFarm.id } }) != null, true);
+  assert.equal(await prisma.countRecord.count({ where: { farmId: otherFarm.id } }), 1);
+
+  const mixedFarm = await prisma.farm.create({
+    data: { name: "Mixed farm", displayOrder: 93, active: true, updatedAt: new Date() },
+  });
+  await counts.syncCounts(session, [
+    {
+      clientSyncId: "mixed-active",
+      timestampLocal: "2026-09-16T09:01:02.345-04:00",
+      action: constants.ACTIONS.YARD,
+      farmId: mixedFarm.id,
+      farmName: mixedFarm.name,
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      quantity: 1,
+      sessionId: "session-mixed-farm",
+      sessionStartedAt: new Date().toISOString(),
+    },
+    {
+      clientSyncId: "mixed-void",
+      timestampLocal: "2026-09-16T09:02:02.345-04:00",
+      action: constants.ACTIONS.YARD,
+      farmId: mixedFarm.id,
+      farmName: mixedFarm.name,
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      quantity: 1,
+      sessionId: "session-mixed-farm",
+      sessionStartedAt: new Date().toISOString(),
+    },
+  ]);
+  const mixedVoid = await prisma.countRecord.findFirstOrThrow({ where: { clientSyncId: "mixed-void" } });
+  await counts.voidCounts([mixedVoid.id]);
+  const mixedDelete = await farmsMod.deleteOrDeactivateFarm(mixedFarm.id);
+  assert.equal(mixedDelete.ok, true);
+  if (mixedDelete.ok) assert.equal("deactivated" in mixedDelete && mixedDelete.deactivated, true);
+  assert.equal(await prisma.countRecord.count({ where: { farmId: mixedFarm.id } }), 2);
 });
 
 test("tree sizes store optional color without touching grades", async () => {

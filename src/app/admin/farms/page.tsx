@@ -61,7 +61,7 @@ export default function FarmsPage() {
 
   return (
     <AdminShell title="Farms">
-      <p>Only active farms appear on Yard Receiving. Farms with saved counts cannot be permanently deleted — deactivate them instead.</p>
+      <p>Only active farms appear on Yard Receiving. Farms with active saved counts cannot be permanently deleted — deactivate them instead. Voided history does not block delete.</p>
       {msg ? <div className="alert info">{msg}</div> : null}
       <div className="row">
         <input placeholder="Search farms" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void load()} />
@@ -108,7 +108,7 @@ export default function FarmsPage() {
       </div>
       {rename ? (
         <ConfirmDialog
-          title="Rename farm with saved counts?"
+          title="Rename farm with active saved counts?"
           body="Past counts keep the farm name they had when they were tapped. New counts will use the new name."
           confirmLabel="Rename anyway"
           onCancel={() => setRename(null)}
