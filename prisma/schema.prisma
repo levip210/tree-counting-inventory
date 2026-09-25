@@ -1,0 +1,157 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// First-admin and later farm managers. Email + hashed password required.
+model AdminAccount {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  pinHash      String?
+  pinKey       String?  @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+/// Numeric PIN login only. Identity is never written onto count records.
+model CounterAccount {
+  id           String   @id @default(cuid())
+  accountLabel String
+  pinHash      String
+  pinKey       String   @unique
+  active       Boolean  @default(true)
+  access       String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Farm {
+  id           String              @id @default(cuid())
+  name         String
+  displayOrder Int                 @default(0)
+  active       Boolean             @default(true)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  inventory    StartingInventory[]
+}
+
+model TreeSize {
+  id           String              @id @default(cuid())
+  name         String
+  /// Optional #RRGGBB for counting labels. Null/empty means no color.
+  color        String?
+  displayOrder Int                 @default(0)
+  active       Boolean             @default(true)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  inventory    StartingInventory[]
+}
+
+model TreeGrade {
+  id           String              @id @default(cuid())
+  name         String
+  displayOrder Int                 @default(0)
+  active       Boolean             @default(true)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  inventory    StartingInventory[]
+}
+
+/// Browser counting session. Does not store who counted.
+model CountSession {
+  id        String        @id
+  action    String
+  farmId    String?
+  farmName  String?
+  startedAt DateTime
+  endedAt   DateTime?
+  createdAt DateTime      @default(now())
+  counts    CountRecord[]
+}
+
+model CountRecord {
+  id             String        @id @default(cuid())
+  timestampLocal String
+  timestampUtc   DateTime
+  action         String
+  farmId         String?
+  farmName       String?
+  sizeId         String
+  sizeName       String
+  gradeId        String
+  gradeName      String
+  quantity       Int           @default(1)
+  sessionId      String
+  session        CountSession  @relation(fields: [sessionId], references: [id])
+  clientSyncId   String        @unique
+  createdAt      DateTime      @default(now())
+  syncedAt       DateTime?
+  voidedAt       DateTime?
+  voidReason     String?
+  correctionNote String?
+  correctedAt    DateTime?
+}
+
+model StartingInventory {
+  id        String    @id @default(cuid())
+  farmId    String
+  sizeId    String
+  gradeId   String
+  quantity  Int
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  farm      Farm      @relation(fields: [farmId], references: [id])
+  size      TreeSize  @relation(fields: [sizeId], references: [id])
+  grade     TreeGrade @relation(fields: [gradeId], references: [id])
+
+  @@unique([farmId, sizeId, gradeId])
+}
+
+model AppSettings {
+  id                 String    @id @default("default")
+  setupLocked        Boolean   @default(false)
+  excelApiKeyHash    String?
+  excelEnabled       Boolean   @default(false)
+  soundEnabled       Boolean   @default(true)
+  vibrationEnabled   Boolean   @default(true)
+  checklistJson      String    @default("{}")
+  checklistDismissed Boolean   @default(false)
+  updatedAt          DateTime  @updatedAt
+}
+
+model LoginAttempt {
+  id          String    @id @default(cuid())
+  scope       String
+  failCount   Int       @default(0)
+  lockedUntil DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([scope])
+}
+
+/// Intercepted farm tap that was not on that farm's starting inventory.
+/// Never included in live count totals. Delete removes only this row.
+model Miscount {
+  id             String   @id @default(cuid())
+  farmId         String
+  farmName       String
+  sizeId         String
+  sizeName       String
+  gradeId        String
+  gradeName      String
+  counterId      String
+  counterName    String
+  counterRole    String
+  timestampLocal String
+  timestampUtc   DateTime
+  clientSyncId   String   @unique
+  createdAt      DateTime @default(now())
+
+  @@index([timestampUtc])
+}
