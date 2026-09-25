@@ -22,6 +22,14 @@ execSync("npx prisma db push --skip-generate", {
 
 const prisma = new PrismaClient({ datasources: { db: { url: `file:${dbPath}` } } });
 
+async function carry(farmId: string, sizeId: string, gradeId: string, quantity = 20) {
+  await prisma.startingInventory.upsert({
+    where: { farmId_sizeId_gradeId: { farmId, sizeId, gradeId } },
+    create: { farmId, sizeId, gradeId, quantity, updatedAt: new Date() },
+    update: { quantity, updatedAt: new Date() },
+  });
+}
+
 type SetupMod = typeof import("../src/server/setup");
 type CountsMod = typeof import("../src/server/counts");
 type FarmsMod = typeof import("../src/server/farms");
@@ -146,6 +154,7 @@ test("sync dedupes by clientSyncId and stores snapshots", async () => {
   const farm = await prisma.farm.create({
     data: { name: "Bald Mountain", displayOrder: 0, active: true, updatedAt: new Date() },
   });
+  await carry(farm.id, size.id, grade.id);
   const payload = {
     clientSyncId: "dup-1",
     timestampLocal: "2026-09-10T08:01:02.345-04:00",
@@ -165,8 +174,11 @@ test("sync dedupes by clientSyncId and stores snapshots", async () => {
   const second = await counts.syncCounts(session, [payload]);
   assert.equal(first.accepted.length, 1);
   assert.equal(first.accepted[0]?.duplicate, false);
+  assert.equal(first.accepted[0]?.miscount, false);
   assert.equal(second.accepted[0]?.duplicate, true);
+  assert.equal(second.accepted[0]?.miscount, false);
   assert.equal(await prisma.countRecord.count(), 1);
+  assert.equal(await prisma.miscount.count(), 0);
   const row = await prisma.countRecord.findFirstOrThrow();
   assert.equal(row.farmName, "Bald Mountain");
   assert.equal(row.quantity, 1);
@@ -219,6 +231,7 @@ test("voidCounts soft-voids a batch without requiring a reason", async () => {
   const size = await prisma.treeSize.findFirstOrThrow();
   const grade = await prisma.treeGrade.findFirstOrThrow();
   const farm = await prisma.farm.findFirstOrThrow();
+  await carry(farm.id, size.id, grade.id);
   const session = { role: "admin" as const, access: "admin" as const, name: "Levi", adminId: "x" };
   const payloads = [1, 2, 3].map((n) => ({
     clientSyncId: `batch-${n}`,
@@ -276,6 +289,8 @@ test("farm delete ignores voided counts and still deactivates farms with active 
   await prisma.startingInventory.create({
     data: { farmId: voidedFarm.id, sizeId: size.id, gradeId: grade.id, quantity: 12, updatedAt: new Date() },
   });
+  await carry(activeFarm.id, size.id, grade.id);
+  await carry(otherFarm.id, size.id, grade.id);
 
   await counts.syncCounts(session, [
     {
@@ -351,6 +366,7 @@ test("farm delete ignores voided counts and still deactivates farms with active 
   const mixedFarm = await prisma.farm.create({
     data: { name: "Mixed farm", displayOrder: 93, active: true, updatedAt: new Date() },
   });
+  await carry(mixedFarm.id, size.id, grade.id);
   await counts.syncCounts(session, [
     {
       clientSyncId: "mixed-active",
@@ -387,6 +403,287 @@ test("farm delete ignores voided counts and still deactivates farms with active 
   assert.equal(mixedDelete.ok, true);
   if (mixedDelete.ok) assert.equal("deactivated" in mixedDelete && mixedDelete.deactivated, true);
   assert.equal(await prisma.countRecord.count({ where: { farmId: mixedFarm.id } }), 2);
+});
+
+test("yard tap on a farm's starting inventory counts and does not create a miscount", async () => {
+  const size = await prisma.treeSize.findFirstOrThrow();
+  const grades = await prisma.treeGrade.findMany({ orderBy: { displayOrder: "asc" } });
+  const grade = grades[0]!;
+  const other = grades[1]!;
+  const farm = await prisma.farm.create({
+    data: { name: "Listed farm", displayOrder: 40, active: true, updatedAt: new Date() },
+  });
+  await carry(farm.id, size.id, grade.id, 0);
+  const before = await prisma.countRecord.count({ where: { farmId: farm.id, voidedAt: null } });
+  const session = { role: "counter" as const, access: "yard" as const, name: "Yard tablet", counterId: "counter-listed" };
+  const result = await counts.syncCounts(session, [
+    {
+      clientSyncId: "listed-ok",
+      timestampLocal: "2026-09-25T09:00:00.000-04:00",
+      action: constants.ACTIONS.YARD,
+      farmId: farm.id,
+      farmName: "Wrong snapshot",
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      quantity: 1,
+      sessionId: "session-listed",
+      sessionStartedAt: new Date().toISOString(),
+      counterName: "Should not be stored on the count",
+    },
+  ]);
+  assert.equal(result.accepted[0]?.miscount, false);
+  assert.equal(await prisma.miscount.count({ where: { farmId: farm.id } }), 0);
+  assert.equal(await prisma.countRecord.count({ where: { farmId: farm.id, voidedAt: null } }), before + 1);
+  assert.equal(other.id.length > 0, true);
+});
+
+test("yard tap missing from starting inventory is a miscount and does not change the live count", async () => {
+  const sizes = await prisma.treeSize.findMany({ orderBy: { displayOrder: "asc" } });
+  const grades = await prisma.treeGrade.findMany({ orderBy: { displayOrder: "asc" } });
+  const size = sizes[0]!;
+  const otherSize = sizes[1]!;
+  const grade = grades[0]!;
+  const otherGrade = grades[1]!;
+  const farm = await prisma.farm.create({
+    data: { name: "Ridge farm", displayOrder: 41, active: true, updatedAt: new Date() },
+  });
+  await carry(farm.id, size.id, grade.id, 8);
+  const liveBefore = await prisma.countRecord.count({ where: { farmId: farm.id, voidedAt: null } });
+  const session = { role: "counter" as const, access: "yard" as const, name: "Ridge crew", counterId: "counter-ridge" };
+
+  const valid = await counts.syncCounts(session, [
+    {
+      clientSyncId: "ridge-valid",
+      timestampLocal: "2026-09-25T10:00:00.000-04:00",
+      action: constants.ACTIONS.YARD,
+      farmId: farm.id,
+      farmName: farm.name,
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      quantity: 1,
+      sessionId: "session-ridge",
+      sessionStartedAt: new Date().toISOString(),
+    },
+  ]);
+  assert.equal(valid.accepted[0]?.miscount, false);
+
+  const invalid = await counts.syncCounts(session, [
+    {
+      clientSyncId: "ridge-bad",
+      timestampLocal: "2026-09-25T10:01:00.000-04:00",
+      action: constants.ACTIONS.YARD,
+      farmId: farm.id,
+      farmName: "Client farm name",
+      sizeId: otherSize.id,
+      sizeName: "client-size",
+      gradeId: otherGrade.id,
+      gradeName: "client-grade",
+      quantity: 1,
+      sessionId: "session-ridge",
+      sessionStartedAt: new Date().toISOString(),
+      counterName: "Spoofed",
+      counterId: "spoof",
+    },
+  ]);
+  assert.equal(invalid.accepted.length, 1);
+  assert.equal(invalid.accepted[0]?.miscount, true);
+  assert.equal(invalid.rejected.length, 0);
+  assert.equal(await prisma.countRecord.count({ where: { farmId: farm.id, voidedAt: null } }), liveBefore + 1);
+  assert.equal(await prisma.countRecord.count({ where: { clientSyncId: "ridge-bad" } }), 0);
+
+  const again = await counts.syncCounts(session, [
+    {
+      clientSyncId: "ridge-bad",
+      timestampLocal: "2026-09-25T10:01:00.000-04:00",
+      action: constants.ACTIONS.YARD,
+      farmId: farm.id,
+      farmName: farm.name,
+      sizeId: otherSize.id,
+      sizeName: otherSize.name,
+      gradeId: otherGrade.id,
+      gradeName: otherGrade.name,
+      quantity: 1,
+      sessionId: "session-ridge",
+      sessionStartedAt: new Date().toISOString(),
+    },
+  ]);
+  assert.equal(again.accepted[0]?.duplicate, true);
+  assert.equal(again.accepted[0]?.miscount, true);
+  assert.equal(await prisma.miscount.count({ where: { clientSyncId: "ridge-bad" } }), 1);
+
+  const row = await prisma.miscount.findFirstOrThrow({ where: { clientSyncId: "ridge-bad" } });
+  assert.equal(row.farmId, farm.id);
+  assert.equal(row.farmName, "Ridge farm");
+  assert.equal(row.sizeName, otherSize.name);
+  assert.equal(row.gradeName, otherGrade.name);
+  assert.equal(row.counterId, "counter-ridge");
+  assert.equal(row.counterName, "Ridge crew");
+  assert.equal(row.counterRole, "counter");
+});
+
+test("shipping taps are not checked against farm inventory", async () => {
+  const size = await prisma.treeSize.findFirstOrThrow();
+  const grade = await prisma.treeGrade.findFirstOrThrow();
+  const before = await prisma.countRecord.count({ where: { action: constants.ACTIONS.SHIP, voidedAt: null } });
+  const misBefore = await prisma.miscount.count();
+  const session = { role: "counter" as const, access: "shipping" as const, name: "Ship crew", counterId: "counter-ship" };
+  const result = await counts.syncCounts(session, [
+    {
+      clientSyncId: "ship-free",
+      timestampLocal: "2026-09-25T11:00:00.000-04:00",
+      action: constants.ACTIONS.SHIP,
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      quantity: 1,
+      sessionId: "session-ship-free",
+      sessionStartedAt: new Date().toISOString(),
+    },
+  ]);
+  assert.equal(result.accepted[0]?.miscount, false);
+  assert.equal(await prisma.countRecord.count({ where: { action: constants.ACTIONS.SHIP, voidedAt: null } }), before + 1);
+  assert.equal(await prisma.miscount.count(), misBefore);
+});
+
+test("admin delete removes only the miscount row", async () => {
+  const miscounts = await import("../src/server/miscounts");
+  const size = await prisma.treeSize.findFirstOrThrow();
+  const grade = await prisma.treeGrade.findFirstOrThrow();
+  const farm = await prisma.farm.create({
+    data: { name: "Delete farm", displayOrder: 42, active: true, updatedAt: new Date() },
+  });
+  await carry(farm.id, size.id, grade.id, 3);
+  const session = { role: "admin" as const, access: "admin" as const, name: "Levi", adminId: "admin-levi" };
+  await counts.syncCounts(session, [
+    {
+      clientSyncId: "keep-live",
+      timestampLocal: "2026-09-25T12:00:00.000-04:00",
+      action: constants.ACTIONS.YARD,
+      farmId: farm.id,
+      farmName: farm.name,
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      quantity: 1,
+      sessionId: "session-delete-mis",
+      sessionStartedAt: new Date().toISOString(),
+    },
+  ]);
+  const live = await prisma.countRecord.count({ where: { farmId: farm.id, voidedAt: null } });
+  await prisma.miscount.create({
+    data: {
+      farmId: farm.id,
+      farmName: farm.name,
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      counterId: "counter-x",
+      counterName: "Pat",
+      counterRole: "counter",
+      timestampLocal: "2026-09-25T12:05:00.000-04:00",
+      timestampUtc: new Date("2026-09-25T16:05:00.000Z"),
+      clientSyncId: "drop-miscount",
+    },
+  });
+  const older = await prisma.miscount.create({
+    data: {
+      farmId: farm.id,
+      farmName: farm.name,
+      sizeId: size.id,
+      sizeName: size.name,
+      gradeId: grade.id,
+      gradeName: grade.name,
+      counterId: "counter-y",
+      counterName: "Sam",
+      counterRole: "counter",
+      timestampLocal: "2026-09-25T08:00:00.000-04:00",
+      timestampUtc: new Date("2026-09-25T12:00:00.000Z"),
+      clientSyncId: "older-miscount",
+    },
+  });
+  const listed = await miscounts.listMiscounts();
+  const ids = listed.filter((row) => row.farmId === farm.id).map((row) => row.id);
+  assert.equal(ids[0] !== older.id, true);
+  assert.ok(listed.findIndex((row) => row.clientSyncId === undefined || row.farmName === farm.name) >= 0);
+  const farmRows = listed.filter((row) => row.farmId === farm.id);
+  assert.equal(farmRows[0]?.counterName, "Pat");
+  assert.equal(farmRows[1]?.counterName, "Sam");
+
+  const removed = await miscounts.deleteMiscount(farmRows[0]!.id);
+  assert.equal(removed.ok, true);
+  assert.equal(await prisma.miscount.count({ where: { clientSyncId: "drop-miscount" } }), 0);
+  assert.equal(await prisma.miscount.count({ where: { clientSyncId: "older-miscount" } }), 1);
+  assert.equal(await prisma.countRecord.count({ where: { farmId: farm.id, voidedAt: null } }), live);
+  const missing = await miscounts.deleteMiscount("nope");
+  assert.equal(missing.ok, false);
+});
+
+test("non-admin cannot list or delete miscounts", async () => {
+  const { NextRequest } = await import("next/server");
+  const { signSession } = await import("../src/lib/session-edge");
+  const { GET, DELETE } = await import("../src/app/api/admin/miscounts/route");
+  const miscounts = await import("../src/server/miscounts");
+
+  assert.equal(miscounts.canReviewMiscounts(null), false);
+  assert.equal(
+    miscounts.canReviewMiscounts({ role: "counter", access: "both", name: "Pat", counterId: "c" }),
+    false,
+  );
+  assert.equal(miscounts.canReviewMiscounts({ role: "admin", access: "admin", name: "Levi", adminId: "a" }), true);
+
+  const counterToken = await signSession({
+    role: "counter",
+    counterId: "counter-nope",
+    access: "both",
+    name: "Pat",
+  });
+  const counterReq = new NextRequest("http://localhost/api/admin/miscounts", {
+    headers: { cookie: `ptf_session=${counterToken}` },
+  });
+  const listed = await GET(counterReq);
+  assert.equal(listed.status, 401);
+  const deleted = await DELETE(
+    new NextRequest("http://localhost/api/admin/miscounts", {
+      method: "DELETE",
+      headers: { cookie: `ptf_session=${counterToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ id: "any" }),
+    }),
+  );
+  assert.equal(deleted.status, 401);
+
+  const anon = await GET(new NextRequest("http://localhost/api/admin/miscounts"));
+  assert.equal(anon.status, 401);
+
+  const before = await prisma.miscount.count();
+  const adminToken = await signSession({ role: "admin", adminId: "admin-1", access: "admin", name: "Levi" });
+  const adminList = await GET(
+    new NextRequest("http://localhost/api/admin/miscounts", {
+      headers: { cookie: `ptf_session=${adminToken}` },
+    }),
+  );
+  assert.equal(adminList.status, 200);
+  const body = (await adminList.json()) as { miscounts: { id: string }[] };
+  assert.ok(Array.isArray(body.miscounts));
+  if (body.miscounts[0]) {
+    const liveBefore = await prisma.countRecord.count();
+    const adminDelete = await DELETE(
+      new NextRequest("http://localhost/api/admin/miscounts", {
+        method: "DELETE",
+        headers: { cookie: `ptf_session=${adminToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ id: body.miscounts[0].id }),
+      }),
+    );
+    assert.equal(adminDelete.status, 200);
+    assert.equal(await prisma.miscount.count(), before - 1);
+    assert.equal(await prisma.countRecord.count(), liveBefore);
+  }
 });
 
 test("tree sizes store optional color without touching grades", async () => {

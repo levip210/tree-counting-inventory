@@ -159,7 +159,9 @@ You can still **Void** a single row the same way: confirm, then it is voided. **
 
 Or add a **Note**. Totals ignore voided rows.
 
-This screen never shows who counted.
+This count table never shows who counted.
+
+**Miscount review** sits under this page and under **Admin → Account**. It lists taps of a size/grade that farm’s starting inventory does not include. Newest first. Empty state: **No miscounts.** Only an admin can open it. **Delete** removes that review row and does not change live farm counts — those taps were never added.
 
 ## 16. Read the dashboard
 
@@ -179,7 +181,9 @@ Disclaimer (also printed on the dashboard): this is **category counting**, not i
 Enter expected trees per farm × size × grade.
 
 - **Not yet received from farm** = max(0, starting − received)
-- If received exceeds starting, the dashboard and Yard Receiving show an **exceed** warning. Taps still save (no extra confirmation).
+- A saved cell (including 0) means that farm **carries** that size and grade. Leave a cell blank if the farm does not carry it.
+- Yard Receiving checks every tap against this list. A match counts as usual. A combo with no cell is **not** added to the live count; it is saved for **Miscount review**.
+- If received exceeds starting, the dashboard and Yard Receiving show an **exceed** warning. Taps of a listed combo still save.
 
 ## 18. Secure Excel / CSV / JSON export
 

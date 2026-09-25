@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AdminShell, PasswordField } from "@/components/AdminShell";
+import { MiscountReview } from "@/components/MiscountReview";
 import { api } from "@/lib/client";
 
 export default function AccountPage() {
@@ -93,6 +94,7 @@ export default function AccountPage() {
       <label className="field"><span>New email</span><input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} /></label>
       <label className="field"><span>New password</span><input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} /></label>
       <button className="btn gold" type="button" onClick={() => void changeAccount()}>Save account changes</button>
+      <MiscountReview />
     </AdminShell>
   );
 }

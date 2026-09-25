@@ -471,6 +471,26 @@ table.data input[type="checkbox"] {
   font-weight: 800;
   z-index: 60;
 }
+.toast-miscount {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  background: var(--pine-800);
+  color: var(--cream);
+  border: 2px solid var(--gold);
+  padding: 14px 18px;
+  border-radius: 14px;
+  font-weight: 800;
+  z-index: 60;
+  max-width: min(92vw, 420px);
+  text-align: center;
+}
+.miscount-review {
+  margin-top: 28px;
+  padding-top: 8px;
+  border-top: 1px solid #eee3cc;
+}
 
 @media (max-width: 900px) {
   .home-grid, .session-bar { grid-template-columns: 1fr; }

@@ -2,6 +2,7 @@ import { ACTIONS, type ActionType } from "../lib/constants";
 import { prisma } from "../lib/prisma";
 import { stripIdentity } from "../lib/guards";
 import type { SessionPayload } from "../lib/session";
+import { counterFromSession, farmCarriesSizeGrade } from "./miscounts";
 
 export type IncomingCount = {
   clientSyncId: string;
@@ -100,7 +101,7 @@ function canWriteAction(session: SessionPayload, action: ActionType): boolean {
 }
 
 export async function syncCounts(session: SessionPayload, rawCounts: unknown[]) {
-  const accepted: { clientSyncId: string; id: string; duplicate: boolean }[] = [];
+  const accepted: { clientSyncId: string; id: string; duplicate: boolean; miscount: boolean }[] = [];
   const rejected: { clientSyncId?: string; error: string }[] = [];
 
   for (const raw of rawCounts) {
@@ -123,8 +124,35 @@ export async function syncCounts(session: SessionPayload, rawCounts: unknown[]) 
       where: { clientSyncId: sanitized.clientSyncId },
     });
     if (existing) {
-      accepted.push({ clientSyncId: sanitized.clientSyncId, id: existing.id, duplicate: true });
+      accepted.push({ clientSyncId: sanitized.clientSyncId, id: existing.id, duplicate: true, miscount: false });
       continue;
+    }
+
+    const existingMiscount = await prisma.miscount.findUnique({
+      where: { clientSyncId: sanitized.clientSyncId },
+    });
+    if (existingMiscount) {
+      accepted.push({
+        clientSyncId: sanitized.clientSyncId,
+        id: existingMiscount.id,
+        duplicate: true,
+        miscount: true,
+      });
+      continue;
+    }
+
+    if (sanitized.action === ACTIONS.YARD && sanitized.farmId) {
+      const carries = await farmCarriesSizeGrade(sanitized.farmId, sanitized.sizeId, sanitized.gradeId);
+      if (!carries) {
+        const recorded = await recordMiscount(session, sanitized);
+        accepted.push({
+          clientSyncId: sanitized.clientSyncId,
+          id: recorded.id,
+          duplicate: false,
+          miscount: true,
+        });
+        continue;
+      }
     }
 
     const startedAt = sanitized.sessionStartedAt ? new Date(sanitized.sessionStartedAt) : new Date();
@@ -158,10 +186,36 @@ export async function syncCounts(session: SessionPayload, rawCounts: unknown[]) 
         syncedAt: now,
       },
     });
-    accepted.push({ clientSyncId: sanitized.clientSyncId, id: created.id, duplicate: false });
+    accepted.push({ clientSyncId: sanitized.clientSyncId, id: created.id, duplicate: false, miscount: false });
   }
 
   return { accepted, rejected };
+}
+
+async function recordMiscount(session: SessionPayload, sanitized: IncomingCount) {
+  const [farm, size, grade] = await Promise.all([
+    sanitized.farmId ? prisma.farm.findUnique({ where: { id: sanitized.farmId } }) : Promise.resolve(null),
+    prisma.treeSize.findUnique({ where: { id: sanitized.sizeId } }),
+    prisma.treeGrade.findUnique({ where: { id: sanitized.gradeId } }),
+  ]);
+  const who = counterFromSession(session);
+  const now = new Date();
+  return prisma.miscount.create({
+    data: {
+      farmId: sanitized.farmId || "",
+      farmName: farm?.name || sanitized.farmName || "Farm",
+      sizeId: sanitized.sizeId,
+      sizeName: size?.name || sanitized.sizeName,
+      gradeId: sanitized.gradeId,
+      gradeName: grade?.name || sanitized.gradeName,
+      counterId: who.counterId,
+      counterName: who.counterName,
+      counterRole: who.counterRole,
+      timestampLocal: sanitized.timestampLocal,
+      timestampUtc: now,
+      clientSyncId: sanitized.clientSyncId,
+    },
+  });
 }
 
 function voidReasonText(reason: string | undefined, fallback: string) {
