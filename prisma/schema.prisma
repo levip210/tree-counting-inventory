@@ -134,3 +134,24 @@ model LoginAttempt {
 
   @@unique([scope])
 }
+
+/// Intercepted farm tap that was not on that farm's starting inventory.
+/// Never included in live count totals. Delete removes only this row.
+model Miscount {
+  id             String   @id @default(cuid())
+  farmId         String
+  farmName       String
+  sizeId         String
+  sizeName       String
+  gradeId        String
+  gradeName      String
+  counterId      String
+  counterName    String
+  counterRole    String
+  timestampLocal String
+  timestampUtc   DateTime
+  clientSyncId   String   @unique
+  createdAt      DateTime @default(now())
+
+  @@index([timestampUtc])
+}

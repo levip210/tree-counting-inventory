@@ -23,6 +23,8 @@ type Progress = {
   gradeName: string;
 };
 
+type TapMeta = { key: string; size: string; grade: string; color: string | null };
+
 type Catalog = {
   farms: Farm[];
   sizes: Cat[];
@@ -47,6 +49,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   const [flashKey, setFlashKey] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<"ok" | "bad" | null>(null);
   const [failMsg, setFailMsg] = useState("");
+  const [notice, setNotice] = useState("");
   const [confirmFarm, setConfirmFarm] = useState(false);
   const [endOpen, setEndOpen] = useState(false);
   const [sound, setSound] = useState(true);
@@ -54,6 +57,9 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   const lastTap = useRef<Record<string, number>>({});
   const undoStack = useRef<string[]>([]);
   const syncing = useRef(false);
+  const appliedRef = useRef<Map<string, TapMeta>>(new Map());
+  const heldRef = useRef<Map<string, TapMeta>>(new Map());
+  const noticeTimer = useRef<number | null>(null);
 
   const storageKey = `ptf-${mode}`;
 
@@ -99,6 +105,12 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     return `${sizeId}|${gradeId}`;
   }
 
+  function farmCarries(farmId: string, sizeId: string, gradeId: string) {
+    return (catalog?.startingProgress || []).some(
+      (row) => row.farmId === farmId && row.sizeId === sizeId && row.gradeId === gradeId,
+    );
+  }
+
   function startSession(nextFarm: Farm | null) {
     const id = newId();
     const ts = new Date().toISOString();
@@ -122,6 +134,49 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     });
   }
 
+  function showNotice(message: string) {
+    setFailMsg("");
+    setNotice(message);
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(""), 2200);
+  }
+
+  function applyLiveTap(id: string, meta: TapMeta) {
+    if (appliedRef.current.has(id)) return;
+    heldRef.current.delete(id);
+    appliedRef.current.set(id, meta);
+    undoStack.current.push(id);
+    setTotals((t) => ({ ...t, [meta.key]: (t[meta.key] || 0) + 1 }));
+    setSessionTotal((n) => n + 1);
+    setLast({ size: meta.size, grade: meta.grade, color: meta.color });
+  }
+
+  function revertLiveTap(id: string) {
+    const meta = appliedRef.current.get(id);
+    if (!meta) return;
+    appliedRef.current.delete(id);
+    undoStack.current = undoStack.current.filter((saved) => saved !== id);
+    setTotals((t) => ({ ...t, [meta.key]: Math.max(0, (t[meta.key] || 0) - 1) }));
+    setSessionTotal((n) => Math.max(0, n - 1));
+  }
+
+  function reconcileAccepted(accepted: { clientSyncId: string; miscount?: boolean }[]) {
+    let intercepted = false;
+    for (const row of accepted) {
+      if (row.miscount) {
+        if (appliedRef.current.has(row.clientSyncId)) {
+          revertLiveTap(row.clientSyncId);
+          intercepted = true;
+        }
+        heldRef.current.delete(row.clientSyncId);
+        continue;
+      }
+      const held = heldRef.current.get(row.clientSyncId);
+      if (held) applyLiveTap(row.clientSyncId, held);
+    }
+    if (intercepted) showNotice("Not on this farm — saved for review");
+  }
+
   async function flush() {
     if (syncing.current) return;
     syncing.current = true;
@@ -137,7 +192,8 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
         body: JSON.stringify({ counts: pendingRows }),
       });
       const data = await res.json().catch(() => ({}));
-      const accepted = (data.accepted || []) as { clientSyncId: string }[];
+      const accepted = (data.accepted || []) as { clientSyncId: string; miscount?: boolean }[];
+      reconcileAccepted(accepted);
       await removePending(accepted.map((a) => a.clientSyncId));
       setPending(await pendingCount());
     } catch {
@@ -202,20 +258,27 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
       sessionStartedAt: started,
     };
 
+    const meta: TapMeta = { key, size: size.name, grade: grade.name, color: size.color || null };
+    const onFarmList = mode !== "yard" || !farm || farmCarries(farm.id, size.id, grade.id);
+
     try {
       await queueCount(count);
     } catch {
       flash(false);
+      setNotice("");
       setFailMsg("Count not saved — tap again");
       window.setTimeout(() => setFailMsg(""), 1800);
       return;
     }
 
-    undoStack.current.push(count.clientSyncId);
-    setTotals((t) => ({ ...t, [key]: (t[key] || 0) + 1 }));
-    setSessionTotal((n) => n + 1);
-    setLast({ size: size.name, grade: grade.name, color: size.color || null });
-    flash(true, key);
+    if (onFarmList) {
+      applyLiveTap(count.clientSyncId, meta);
+      flash(true, key);
+    } else {
+      heldRef.current.set(count.clientSyncId, meta);
+      flash(false);
+      showNotice("Not on this farm — saved for review");
+    }
     setPending((n) => n + 1);
     void flush();
   }
@@ -223,6 +286,8 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   async function undo() {
     const id = undoStack.current.pop();
     if (!id) return;
+    appliedRef.current.delete(id);
+    heldRef.current.delete(id);
     const pendingRows = await allPending();
     const local = pendingRows.find((p) => p.clientSyncId === id);
     if (local) {
@@ -307,6 +372,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     <div className="screen">
       {overlay ? <div className={`flash-overlay ${overlay}`} /> : null}
       {failMsg ? <div className="toast-fail">{failMsg}</div> : null}
+      {notice ? <div className="toast-miscount">{notice}</div> : null}
       <div className="status-bar">
         <div className="row">
           <span className={`pill ${online ? "" : "offline"}`}>{online ? "Online" : "Offline"}</span>

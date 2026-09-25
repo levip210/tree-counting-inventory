@@ -18,12 +18,14 @@ export async function POST(req: NextRequest) {
   if (body.action === "delete-counts") {
     await prisma.countRecord.deleteMany();
     await prisma.countSession.deleteMany();
+    await prisma.miscount.deleteMany();
     return json({ ok: true, message: "All counting data was deleted." });
   }
 
   if (body.action === "reset-site") {
     await prisma.countRecord.deleteMany();
     await prisma.countSession.deleteMany();
+    await prisma.miscount.deleteMany();
     await prisma.startingInventory.deleteMany();
     await prisma.counterAccount.deleteMany();
     await prisma.farm.deleteMany();

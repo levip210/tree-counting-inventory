@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 
 import {
   SIZE_COLOR_MIGRATION,
+  MISCOUNT_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 } from "../scripts/ensure-sqlite-schema.cjs";
@@ -136,12 +137,21 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
     migration.checksum,
     sha256File(join(process.cwd(), "prisma/migrations", SIZE_COLOR_MIGRATION, "migration.sql")),
   );
+  const miscount = again
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'Miscount'`)
+    .get() as { name: string } | undefined;
+  assert.equal(miscount?.name, "Miscount");
+  const miscountMigration = again
+    .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+    .get(MISCOUNT_MIGRATION) as { migration_name: string };
+  assert.equal(miscountMigration.migration_name, MISCOUNT_MIGRATION);
   again.close();
 
   const second = ensureSqliteSchema(`file:${dbPath}`);
   assert.equal(second.ok, true);
   assert.equal(second.added, false);
   assert.equal(second.recorded, false);
+  assert.equal(second.miscountAdded, false);
 
   rmSync(dir, { recursive: true, force: true });
 });
@@ -181,8 +191,12 @@ test("prisma-migrate.cjs still adds TreeSize.color when the CLI cannot start", (
     const check = new DatabaseSync(dbPath);
     const cols = check.prepare(`PRAGMA table_info("TreeSize")`).all().map((c: { name: string }) => c.name);
     const row = check.prepare(`SELECT id, name FROM "TreeSize"`).get() as { id: string; name: string };
+    const miscount = check
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'Miscount'`)
+      .get() as { name: string } | undefined;
     assert.ok(cols.includes("color"));
     assert.equal(row.id, "keep");
+    assert.equal(miscount?.name, "Miscount");
     check.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -240,7 +254,17 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
     const applied = check
       .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
       .get(SIZE_COLOR_MIGRATION);
+    const miscountApplied = check
+      .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+      .get(MISCOUNT_MIGRATION);
+    const miscount = check
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'Miscount'`)
+      .get() as { name: string } | undefined;
     assert.ok(applied);
+    assert.ok(miscountApplied);
+    assert.equal(miscount?.name, "Miscount");
+    const farmStill = check.prepare(`SELECT name FROM "Farm" WHERE id = 'farm-keep'`).get() as { name: string };
+    assert.equal(farmStill.name, "Home farm");
     check.close();
   } finally {
     rmSync(dest, { recursive: true, force: true });

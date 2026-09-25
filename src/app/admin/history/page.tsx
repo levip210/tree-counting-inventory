@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AdminShell } from "@/components/AdminShell";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { MiscountReview } from "@/components/MiscountReview";
 import { api } from "@/lib/client";
 
 type Count = {
@@ -211,6 +212,7 @@ export default function HistoryPage() {
           </tbody>
         </table>
       </div>
+      <MiscountReview />
       {pendingDelete ? (
         <ConfirmDialog
           title={deleteCount === 1 ? "Delete this count?" : `Delete ${deleteCount} counts?`}

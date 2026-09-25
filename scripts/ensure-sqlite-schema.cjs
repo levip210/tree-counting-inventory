@@ -13,6 +13,7 @@ const path = require("path");
 const crypto = require("crypto");
 
 const SIZE_COLOR_MIGRATION = "20260915180000_size_color";
+const MISCOUNT_MIGRATION = "20260925170000_miscount";
 
 const PRISMA_MIGRATIONS_DDL = `CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
     "id"                    TEXT PRIMARY KEY NOT NULL,
@@ -108,11 +109,35 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
     if (added) console.log("[start] added TreeSize.color without touching existing rows");
     if (recorded) console.log("[start] recorded prisma migration", SIZE_COLOR_MIGRATION);
 
+    const miscountSqlPath = path.join(migrationsDir, MISCOUNT_MIGRATION, "migration.sql");
+    let miscountAdded = false;
+    if (!tableExists(db, "Miscount")) {
+      if (!fs.existsSync(miscountSqlPath)) {
+        return { ok: false, reason: "miscount-sql-missing", dbPath, added, recorded };
+      }
+      console.log("[start] Miscount table missing; applying", MISCOUNT_MIGRATION);
+      db.exec(fs.readFileSync(miscountSqlPath, "utf8"));
+      miscountAdded = true;
+    }
+    const miscountRecord = recordMigration(db, { name: MISCOUNT_MIGRATION, sqlPath: miscountSqlPath });
+    if (miscountAdded) console.log("[start] added Miscount table without touching live counts");
+    if (miscountRecord.recorded) console.log("[start] recorded prisma migration", MISCOUNT_MIGRATION);
+
     const again = columnNames(db, "TreeSize");
     if (!again.includes("color")) {
-      return { ok: false, reason: "color-still-missing", dbPath, added, recorded };
+      return { ok: false, reason: "color-still-missing", dbPath, added, recorded, miscountAdded };
     }
-    return { ok: true, dbPath, added, recorded };
+    if (!tableExists(db, "Miscount")) {
+      return { ok: false, reason: "miscount-still-missing", dbPath, added, recorded, miscountAdded };
+    }
+    return {
+      ok: true,
+      dbPath,
+      added,
+      recorded,
+      miscountAdded,
+      miscountRecorded: miscountRecord.recorded,
+    };
   } finally {
     db.close();
   }
@@ -120,6 +145,7 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
 
 module.exports = {
   SIZE_COLOR_MIGRATION,
+  MISCOUNT_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 };
