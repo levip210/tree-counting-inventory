@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   SIZE_COLOR_MIGRATION,
   MISCOUNT_MIGRATION,
+  CUSTOMERS_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 } from "../scripts/ensure-sqlite-schema.cjs";
@@ -145,6 +146,14 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
     .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
     .get(MISCOUNT_MIGRATION) as { migration_name: string };
   assert.equal(miscountMigration.migration_name, MISCOUNT_MIGRATION);
+  const customer = again
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'Customer'`)
+    .get() as { name: string } | undefined;
+  assert.equal(customer?.name, "Customer");
+  const customersMigration = again
+    .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+    .get(CUSTOMERS_MIGRATION) as { migration_name: string };
+  assert.equal(customersMigration.migration_name, CUSTOMERS_MIGRATION);
   again.close();
 
   const second = ensureSqliteSchema(`file:${dbPath}`);
@@ -197,6 +206,10 @@ test("prisma-migrate.cjs still adds TreeSize.color when the CLI cannot start", (
     assert.ok(cols.includes("color"));
     assert.equal(row.id, "keep");
     assert.equal(miscount?.name, "Miscount");
+    const customer = check
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'Customer'`)
+      .get() as { name: string } | undefined;
+    assert.equal(customer?.name, "Customer");
     check.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -263,6 +276,17 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
     assert.ok(applied);
     assert.ok(miscountApplied);
     assert.equal(miscount?.name, "Miscount");
+    const customerCols = check.prepare(`PRAGMA table_info("CountRecord")`).all().map((c: { name: string }) => c.name);
+    assert.ok(customerCols.includes("customerId"));
+    assert.ok(customerCols.includes("customerName"));
+    const customerTable = check
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'Customer'`)
+      .get() as { name: string } | undefined;
+    assert.equal(customerTable?.name, "Customer");
+    const customersApplied = check
+      .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+      .get(CUSTOMERS_MIGRATION);
+    assert.ok(customersApplied);
     const farmStill = check.prepare(`SELECT name FROM "Farm" WHERE id = 'farm-keep'`).get() as { name: string };
     assert.equal(farmStill.name, "Home farm");
     check.close();

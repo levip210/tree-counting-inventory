@@ -12,8 +12,9 @@ export async function GET(req: NextRequest) {
   if (!requireAccess(session, "yard") && !requireAccess(session, "shipping")) {
     return errorJson("Sign-in required.", 401);
   }
-  const [farms, sizes, grades, settings, progress] = await Promise.all([
+  const [farms, customers, sizes, grades, settings, progress] = await Promise.all([
     prisma.farm.findMany({ where: { active: true }, orderBy: { displayOrder: "asc" } }),
+    prisma.customer.findMany({ where: { active: true }, orderBy: [{ displayOrder: "asc" }, { name: "asc" }] }),
     prisma.treeSize.findMany({ where: { active: true }, orderBy: { displayOrder: "asc" } }),
     prisma.treeGrade.findMany({ where: { active: true }, orderBy: { displayOrder: "asc" } }),
     prisma.appSettings.findUnique({ where: { id: "default" } }),
@@ -21,6 +22,7 @@ export async function GET(req: NextRequest) {
   ]);
   return json({
     farms,
+    customers,
     sizes,
     grades,
     soundEnabled: settings?.soundEnabled ?? true,

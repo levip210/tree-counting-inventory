@@ -8,6 +8,8 @@ const COUNT_COLUMNS = [
   "Action",
   "FarmID",
   "FarmName",
+  "CustomerID",
+  "CustomerName",
   "SizeID",
   "SizeName",
   "GradeID",
@@ -34,6 +36,8 @@ export async function countingExportRows(includeVoided = false) {
       Action: pub.action,
       FarmID: pub.farmId ?? "",
       FarmName: pub.farmName ?? "",
+      CustomerID: pub.customerId ?? "",
+      CustomerName: pub.customerName ?? "",
       SizeID: pub.sizeId,
       SizeName: pub.sizeName,
       GradeID: pub.gradeId,
@@ -92,9 +96,10 @@ export async function exportInventoryJson() {
 }
 
 export async function backupTables() {
-  const [counts, farms, sizes, grades, sessions, inventory, counters, admins, settings] = await Promise.all([
+  const [counts, farms, customers, sizes, grades, sessions, inventory, counters, admins, settings] = await Promise.all([
     prisma.countRecord.findMany({ orderBy: { createdAt: "asc" } }),
     prisma.farm.findMany({ orderBy: { displayOrder: "asc" } }),
+    prisma.customer.findMany({ orderBy: [{ displayOrder: "asc" }, { name: "asc" }] }),
     prisma.treeSize.findMany({ orderBy: { displayOrder: "asc" } }),
     prisma.treeGrade.findMany({ orderBy: { displayOrder: "asc" } }),
     prisma.countSession.findMany({ orderBy: { startedAt: "asc" } }),
@@ -125,6 +130,8 @@ export async function backupTables() {
       Action: c.action,
       FarmID: c.farmId,
       FarmName: c.farmName,
+      CustomerID: c.customerId,
+      CustomerName: c.customerName,
       SizeID: c.sizeId,
       SizeName: c.sizeName,
       GradeID: c.gradeId,
@@ -139,6 +146,7 @@ export async function backupTables() {
       CorrectionNote: c.correctionNote ?? "",
     })),
     farms,
+    customers,
     sizes,
     grades,
     sessions,

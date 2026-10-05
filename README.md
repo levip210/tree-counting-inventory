@@ -7,7 +7,7 @@ Workers tap a size-and-grade button. Each tap immediately saves **one tree** wit
 This is **not** a full inventory-management system. It does two jobs well:
 
 1. **Yard Receiving** — trees arriving at the loading yard (farm required)
-2. **Shipping** — trees leaving the loading yard (no farm, customer, or order)
+2. **Shipping** — trees leaving the loading yard for a selected customer (no farm)
 
 ## Stack
 

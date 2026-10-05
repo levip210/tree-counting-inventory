@@ -27,6 +27,7 @@ type TapMeta = { key: string; size: string; grade: string; color: string | null 
 
 type Catalog = {
   farms: Farm[];
+  customers?: Farm[];
   sizes: Cat[];
   grades: Cat[];
   soundEnabled: boolean;
@@ -39,6 +40,8 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   const action = mode === "yard" ? ACTIONS.YARD : ACTIONS.SHIP;
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [farm, setFarm] = useState<Farm | null>(null);
+  const [customer, setCustomer] = useState<Farm | null>(null);
+  const [customerQuery, setCustomerQuery] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<string>("");
   const [totals, setTotals] = useState<Record<string, number>>({});
@@ -51,6 +54,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   const [failMsg, setFailMsg] = useState("");
   const [notice, setNotice] = useState("");
   const [confirmFarm, setConfirmFarm] = useState(false);
+  const [confirmCustomer, setConfirmCustomer] = useState(false);
   const [endOpen, setEndOpen] = useState(false);
   const [sound, setSound] = useState(true);
   const [vibe, setVibe] = useState(true);
@@ -111,7 +115,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     );
   }
 
-  function startSession(nextFarm: Farm | null) {
+  function startSession(nextFarm: Farm | null, nextCustomer: Farm | null = null) {
     const id = newId();
     const ts = new Date().toISOString();
     setSessionId(id);
@@ -120,7 +124,10 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     setSessionTotal(0);
     setLast(null);
     undoStack.current = [];
-    sessionStorage.setItem(storageKey, JSON.stringify({ id, ts, farmId: nextFarm?.id || null }));
+    sessionStorage.setItem(
+      storageKey,
+      JSON.stringify({ id, ts, farmId: nextFarm?.id || null, customerId: nextCustomer?.id || null }),
+    );
     void fetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -129,6 +136,8 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
         action,
         farmId: nextFarm?.id || null,
         farmName: nextFarm?.name || null,
+        customerId: nextCustomer?.id || null,
+        customerName: nextCustomer?.name || null,
         startedAt: ts,
       }),
     });
@@ -193,9 +202,15 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
       });
       const data = await res.json().catch(() => ({}));
       const accepted = (data.accepted || []) as { clientSyncId: string; miscount?: boolean }[];
+      const rejected = (data.rejected || []) as { error?: string }[];
       reconcileAccepted(accepted);
       await removePending(accepted.map((a) => a.clientSyncId));
       setPending(await pendingCount());
+      if (rejected.length > 0) {
+        setNotice("");
+        setFailMsg(rejected[0]?.error || "Count not saved — tap again");
+        window.setTimeout(() => setFailMsg(""), 2200);
+      }
     } catch {
       setPending(await pendingCount());
     } finally {
@@ -219,15 +234,22 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     const ts = new Date().toISOString();
     setSessionId(id);
     setStartedAt(ts);
-    sessionStorage.setItem(storageKey, JSON.stringify({ id, ts, farmId: farm?.id || null }));
+    const nextCustomer = mode === "shipping" ? customer : null;
+    const nextFarm = mode === "yard" ? farm : null;
+    sessionStorage.setItem(
+      storageKey,
+      JSON.stringify({ id, ts, farmId: nextFarm?.id || null, customerId: nextCustomer?.id || null }),
+    );
     void fetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id,
         action,
-        farmId: farm?.id || null,
-        farmName: farm?.name || null,
+        farmId: nextFarm?.id || null,
+        farmName: nextFarm?.name || null,
+        customerId: nextCustomer?.id || null,
+        customerName: nextCustomer?.name || null,
         startedAt: ts,
       }),
     });
@@ -236,6 +258,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
 
   async function tap(size: Cat, grade: Cat) {
     if (mode === "yard" && !farm) return;
+    if (mode === "shipping" && !customer) return;
     const { id: sid, started } = ensureSession();
 
     const key = cellKey(size.id, grade.id);
@@ -249,6 +272,8 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
       action,
       farmId: mode === "yard" ? farm?.id : null,
       farmName: mode === "yard" ? farm?.name : null,
+      customerId: mode === "shipping" ? customer?.id : null,
+      customerName: mode === "shipping" ? customer?.name : null,
       sizeId: size.id,
       sizeName: size.name,
       gradeId: grade.id,
@@ -368,6 +393,51 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     );
   }
 
+  if (mode === "shipping" && !customer) {
+    const query = customerQuery.trim().toLowerCase();
+    const allCustomers = catalog.customers || [];
+    const customers = allCustomers.filter((row) => !query || row.name.toLowerCase().includes(query));
+    return (
+      <div className="screen">
+        <p className="brand-kicker">Shipping</p>
+        <h1 className="brand-title">Select a customer</h1>
+        <p className="brand-sub">Find the customer this truck is for. Counting stays locked until you pick one.</p>
+        <label className="customer-search">
+          <span>Find customer</span>
+          <input
+            value={customerQuery}
+            onChange={(e) => setCustomerQuery(e.target.value)}
+            placeholder="Type a name"
+            autoComplete="off"
+            enterKeyHint="search"
+            aria-label="Find customer"
+          />
+        </label>
+        <div className="customer-pick" role="listbox" aria-label="Customers">
+          {customers.map((row) => (
+            <button
+              key={row.id}
+              type="button"
+              role="option"
+              onClick={() => {
+                setCustomer(row);
+                startSession(null, row);
+              }}
+            >
+              {row.name}
+            </button>
+          ))}
+        </div>
+        {allCustomers.length === 0 ? <p>No customers yet. Ask an admin to add one.</p> : null}
+        {allCustomers.length > 0 && customers.length === 0 ? <p>No customer matches that search.</p> : null}
+        <div className="row" style={{ marginTop: 20 }}>
+          <button className="btn cream" type="button" onClick={() => router.push("/home")}>Home</button>
+          <button className="btn ghost" type="button" onClick={logout}>Logout</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="screen">
       {overlay ? <div className={`flash-overlay ${overlay}`} /> : null}
@@ -392,6 +462,18 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
           </div>
           <button className="btn pine" type="button" onClick={() => setConfirmFarm(true)} style={{ background: "#21543a" }}>
             Change farm
+          </button>
+        </div>
+      ) : null}
+
+      {mode === "shipping" && customer ? (
+        <div className="farm-banner">
+          <div>
+            <div className="brand-kicker" style={{ color: "inherit" }}>Counting for</div>
+            <strong>{customer.name}</strong>
+          </div>
+          <button className="btn pine" type="button" onClick={() => setConfirmCustomer(true)} style={{ background: "#21543a" }}>
+            Change customer
           </button>
         </div>
       ) : null}
@@ -469,7 +551,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
         <button className="btn cream" type="button" onClick={() => { setTotals({}); setSessionTotal(0); setLast(null); }}>
           Reset visible totals
         </button>
-        <button className="btn cream" type="button" onClick={() => startSession(farm)}>Start counting</button>
+        <button className="btn cream" type="button" onClick={() => startSession(mode === "yard" ? farm : null, mode === "shipping" ? customer : null)}>Start counting</button>
         <button className="btn gold" type="button" onClick={() => setEndOpen(true)}>End session</button>
         <button className="btn ghost" type="button" onClick={logout}>Logout</button>
       </div>
@@ -483,6 +565,20 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
           onConfirm={() => {
             setConfirmFarm(false);
             setFarm(null);
+            setSessionId(null);
+          }}
+        />
+      ) : null}
+      {confirmCustomer ? (
+        <ConfirmDialog
+          title="Change customer?"
+          body="Visible session totals will reset. Saved counts stay with the customer they were counted for."
+          confirmLabel="Change customer"
+          onCancel={() => setConfirmCustomer(false)}
+          onConfirm={() => {
+            setConfirmCustomer(false);
+            setCustomer(null);
+            setCustomerQuery("");
             setSessionId(null);
           }}
         />

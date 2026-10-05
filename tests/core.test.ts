@@ -104,7 +104,7 @@ test("count sanitizer requires farm for yard and blanks farm for shipping", asyn
   });
   assert.ok("error" in yardBad);
 
-  const ship = counts.sanitizeCount({
+  const shipMissing = counts.sanitizeCount({
     clientSyncId: "b",
     timestampLocal: "2026-09-10T12:00:00.000-04:00",
     action: constants.ACTIONS.SHIP,
@@ -118,10 +118,30 @@ test("count sanitizer requires farm for yard and blanks farm for shipping", asyn
     quantity: 1,
     counterName: "Worker",
   });
+  assert.ok("error" in shipMissing);
+
+  const ship = counts.sanitizeCount({
+    clientSyncId: "b",
+    timestampLocal: "2026-09-10T12:00:00.000-04:00",
+    action: constants.ACTIONS.SHIP,
+    farmId: "should-ignore",
+    farmName: "should-ignore",
+    customerId: "cust-1",
+    customerName: "North Ridge",
+    sizeId: "s",
+    sizeName: "7-8",
+    gradeId: "g",
+    gradeName: "Premium",
+    sessionId: "sess",
+    quantity: 1,
+    counterName: "Worker",
+  });
   assert.ok(!("error" in ship));
   if (!("error" in ship)) {
     assert.equal(ship.farmId, null);
     assert.equal(ship.farmName, null);
+    assert.equal(ship.customerId, "cust-1");
+    assert.equal(ship.customerName, "North Ridge");
   }
 });
 
@@ -132,6 +152,8 @@ test("identity fields are detected and stripped from counts", async () => {
     clientSyncId: "c1",
     timestampLocal: "2026-09-10T12:00:00.000-04:00",
     action: constants.ACTIONS.SHIP,
+    customerId: "cust-1",
+    customerName: "North Ridge",
     sizeId: "s",
     sizeName: "7-8",
     gradeId: "g",
@@ -525,29 +547,100 @@ test("yard tap missing from starting inventory is a miscount and does not change
   assert.equal(row.counterRole, "counter");
 });
 
-test("shipping taps are not checked against farm inventory", async () => {
+test("shipping taps require an active customer and are not checked against farm inventory", async () => {
   const size = await prisma.treeSize.findFirstOrThrow();
   const grade = await prisma.treeGrade.findFirstOrThrow();
+  const otherSize = await prisma.treeSize.findFirstOrThrow({ where: { id: { not: size.id } } });
+  const otherGrade = await prisma.treeGrade.findFirstOrThrow({ where: { id: { not: grade.id } } });
+  const buyer = await prisma.customer.create({ data: { name: "Maple Wholesale", displayOrder: 1, active: true } });
+  const hidden = await prisma.customer.create({ data: { name: "Closed account", displayOrder: 2, active: false } });
   const before = await prisma.countRecord.count({ where: { action: constants.ACTIONS.SHIP, voidedAt: null } });
   const misBefore = await prisma.miscount.count();
   const session = { role: "counter" as const, access: "shipping" as const, name: "Ship crew", counterId: "counter-ship" };
+  const base = {
+    timestampLocal: "2026-09-25T11:00:00.000-04:00",
+    action: constants.ACTIONS.SHIP,
+    sizeId: size.id,
+    sizeName: size.name,
+    gradeId: grade.id,
+    gradeName: grade.name,
+    quantity: 1,
+    sessionId: "session-ship-free",
+    sessionStartedAt: new Date().toISOString(),
+    customerName: "Wrong label",
+  };
+
+  const missing = await counts.syncCounts(session, [{ ...base, clientSyncId: "ship-no-customer" }]);
+  assert.equal(missing.accepted.length, 0);
+  assert.match(missing.rejected[0]?.error || "", /Customer is required/);
+
+  const inactive = await counts.syncCounts(session, [
+    { ...base, clientSyncId: "ship-inactive", customerId: hidden.id, customerName: hidden.name },
+  ]);
+  assert.equal(inactive.accepted.length, 0);
+  assert.match(inactive.rejected[0]?.error || "", /active customer/);
+
   const result = await counts.syncCounts(session, [
+    { ...base, clientSyncId: "ship-free", customerId: buyer.id, customerName: "Wrong label" },
+  ]);
+  assert.equal(result.accepted[0]?.miscount, false);
+  assert.equal(await prisma.countRecord.count({ where: { action: constants.ACTIONS.SHIP, voidedAt: null } }), before + 1);
+  assert.equal(await prisma.miscount.count(), misBefore);
+  const saved = await prisma.countRecord.findUniqueOrThrow({ where: { clientSyncId: "ship-free" } });
+  assert.equal(saved.customerId, buyer.id);
+  assert.equal(saved.customerName, "Maple Wholesale");
+  assert.equal(saved.farmId, null);
+
+  await counts.syncCounts(session, [
     {
-      clientSyncId: "ship-free",
-      timestampLocal: "2026-09-25T11:00:00.000-04:00",
+      ...base,
+      clientSyncId: "ship-other-size",
+      customerId: buyer.id,
+      sizeId: otherSize.id,
+      sizeName: otherSize.name,
+      gradeId: otherGrade.id,
+      gradeName: otherGrade.name,
+    },
+  ]);
+  await counts.syncCounts(session, [
+    {
+      ...base,
+      clientSyncId: "ship-voided",
+      customerId: buyer.id,
+    },
+  ]);
+  await prisma.countRecord.update({ where: { clientSyncId: "ship-voided" }, data: { voidedAt: new Date() } });
+  await prisma.countSession.create({
+    data: { id: "session-ship-old", action: constants.ACTIONS.SHIP, startedAt: new Date() },
+  });
+  await prisma.countRecord.create({
+    data: {
+      timestampLocal: "2026-09-25T11:05:00.000-04:00",
+      timestampUtc: new Date(),
       action: constants.ACTIONS.SHIP,
       sizeId: size.id,
       sizeName: size.name,
       gradeId: grade.id,
       gradeName: grade.name,
       quantity: 1,
-      sessionId: "session-ship-free",
-      sessionStartedAt: new Date().toISOString(),
+      sessionId: "session-ship-old",
+      clientSyncId: "ship-unassigned",
+      customerId: null,
+      customerName: null,
     },
-  ]);
-  assert.equal(result.accepted[0]?.miscount, false);
-  assert.equal(await prisma.countRecord.count({ where: { action: constants.ACTIONS.SHIP, voidedAt: null } }), before + 1);
-  assert.equal(await prisma.miscount.count(), misBefore);
+  });
+
+  const customersMod = await import("../src/server/customers");
+  const report = await customersMod.customerShippingReport();
+  const row = report.customers.find((customer) => customer.id === buyer.id);
+  assert.ok(row);
+  assert.equal(row?.totalTrees, 2);
+  assert.equal(report.unassignedTrees, 1);
+  const premium = row?.bySizeGrade.find((item) => item.sizeId === size.id && item.gradeId === grade.id);
+  const other = row?.bySizeGrade.find((item) => item.sizeId === otherSize.id && item.gradeId === otherGrade.id);
+  assert.equal(premium?.quantity, 1);
+  assert.equal(other?.quantity, 1);
+  assert.equal(report.customers.find((customer) => customer.id === hidden.id)?.totalTrees, 0);
 });
 
 test("admin delete removes only the miscount row", async () => {

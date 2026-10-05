@@ -29,6 +29,7 @@ export async function POST(req: NextRequest) {
     await prisma.startingInventory.deleteMany();
     await prisma.counterAccount.deleteMany();
     await prisma.farm.deleteMany();
+    await prisma.customer.deleteMany();
     await prisma.treeSize.deleteMany();
     await prisma.treeGrade.deleteMany();
     await prisma.loginAttempt.deleteMany();

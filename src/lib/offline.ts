@@ -19,6 +19,8 @@ export type PendingCount = {
   action: string;
   farmId?: string | null;
   farmName?: string | null;
+  customerId?: string | null;
+  customerName?: string | null;
   sizeId: string;
   sizeName: string;
   gradeId: string;

@@ -11,6 +11,7 @@ type Count = {
   timestamp: string;
   action: string;
   farmName: string | null;
+  customerName: string | null;
   sizeName: string;
   gradeName: string;
   quantity: number;
@@ -133,7 +134,7 @@ export default function HistoryPage() {
         </select>
         <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-        <input placeholder="Search size/grade/farm" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input placeholder="Search size/grade/farm/customer" value={q} onChange={(e) => setQ(e.target.value)} />
         <label><input type="checkbox" checked={includeVoided} onChange={(e) => setIncludeVoided(e.target.checked)} /> Include voided</label>
         <button className="btn gold" type="button" onClick={() => void load()}>Filter</button>
       </div>
@@ -166,7 +167,7 @@ export default function HistoryPage() {
                   aria-label="Select all visible counts"
                 />
               </th>
-              <th>CountID</th><th>Timestamp</th><th>Action</th><th>Farm</th><th>Size</th><th>Grade</th><th>Qty</th><th>Session</th><th>Correction</th><th />
+              <th>CountID</th><th>Timestamp</th><th>Action</th><th>Farm</th><th>Customer</th><th>Size</th><th>Grade</th><th>Qty</th><th>Session</th><th>Correction</th><th />
             </tr>
           </thead>
           <tbody>
@@ -192,6 +193,7 @@ export default function HistoryPage() {
                 <td>{c.timestamp}</td>
                 <td>{c.action}</td>
                 <td>{c.farmName || ""}</td>
+                <td>{c.customerName || ""}</td>
                 <td>{c.sizeName}</td>
                 <td>{c.gradeName}</td>
                 <td>{c.quantity}</td>

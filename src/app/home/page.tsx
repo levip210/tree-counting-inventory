@@ -39,13 +39,13 @@ export default function HomePage() {
         {canShip ? (
           <button className="giant" type="button" onClick={() => router.push("/shipping")}>
             <b>Shipping</b>
-            <span>Trees leaving the loading yard. No farm or customer needed.</span>
+            <span>Trees leaving the loading yard. Choose the customer, then tap.</span>
           </button>
         ) : null}
         {me?.role === "admin" ? (
           <button className="giant cream span-all" type="button" onClick={() => router.push("/admin")}>
             <b>Admin</b>
-            <span>Farms, sizes, grades, counters, history, Excel export, backups.</span>
+            <span>Farms, customers, sizes, grades, counters, history, Excel export, backups.</span>
           </button>
         ) : null}
         <button className="giant muted span-all" type="button" onClick={() => void logout()}>

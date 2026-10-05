@@ -41,6 +41,16 @@ model Farm {
   inventory    StartingInventory[]
 }
 
+/// Wholesale buyer. Shipping counts require an active customer.
+model Customer {
+  id           String   @id @default(cuid())
+  name         String
+  displayOrder Int      @default(0)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
 model TreeSize {
   id           String              @id @default(cuid())
   name         String
@@ -65,14 +75,16 @@ model TreeGrade {
 
 /// Browser counting session. Does not store who counted.
 model CountSession {
-  id        String        @id
-  action    String
-  farmId    String?
-  farmName  String?
-  startedAt DateTime
-  endedAt   DateTime?
-  createdAt DateTime      @default(now())
-  counts    CountRecord[]
+  id           String        @id
+  action       String
+  farmId       String?
+  farmName     String?
+  customerId   String?
+  customerName String?
+  startedAt    DateTime
+  endedAt      DateTime?
+  createdAt    DateTime      @default(now())
+  counts       CountRecord[]
 }
 
 model CountRecord {
@@ -82,6 +94,8 @@ model CountRecord {
   action         String
   farmId         String?
   farmName       String?
+  customerId     String?
+  customerName   String?
   sizeId         String
   sizeName       String
   gradeId        String
@@ -96,6 +110,8 @@ model CountRecord {
   voidReason     String?
   correctionNote String?
   correctedAt    DateTime?
+
+  @@index([customerId])
 }
 
 model StartingInventory {

@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
     if (from && row.timestampLocal.slice(0, 10) < from) return false;
     if (to && row.timestampLocal.slice(0, 10) > to) return false;
     if (!q) return true;
-    const hay = `${row.farmName || ""} ${row.sizeName} ${row.gradeName} ${row.action} ${row.id}`.toLowerCase();
+    const hay = `${row.farmName || ""} ${row.customerName || ""} ${row.sizeName} ${row.gradeName} ${row.action} ${row.id}`.toLowerCase();
     return hay.includes(q);
   });
   return json({ counts: filtered.map(publicCount) });

@@ -14,6 +14,16 @@ const crypto = require("crypto");
 
 const SIZE_COLOR_MIGRATION = "20260915180000_size_color";
 const MISCOUNT_MIGRATION = "20260925170000_miscount";
+const CUSTOMERS_MIGRATION = "20261005180000_customers";
+
+const CUSTOMER_TABLE_SQL = `CREATE TABLE "Customer" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "displayOrder" INTEGER NOT NULL DEFAULT 0,
+    "active" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+);`;
 
 const PRISMA_MIGRATIONS_DDL = `CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
     "id"                    TEXT PRIMARY KEY NOT NULL,
@@ -77,6 +87,44 @@ function recordMigration(db, { name, sqlPath }) {
   return { recorded: true };
 }
 
+function addColumnIfMissing(db, table, column, ddl) {
+  if (!tableExists(db, table)) return false;
+  const cols = columnNames(db, table);
+  if (cols.includes(column)) return false;
+  console.log(`[start] ${table}.${column} missing; ${ddl}`);
+  db.exec(ddl);
+  return true;
+}
+
+function ensureCustomers(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, CUSTOMERS_MIGRATION, "migration.sql");
+  let added = false;
+  if (!tableExists(db, "Customer")) {
+    console.log("[start] Customer table missing; creating it");
+    db.exec(CUSTOMER_TABLE_SQL);
+    added = true;
+  }
+  added = addColumnIfMissing(db, "CountSession", "customerId", `ALTER TABLE "CountSession" ADD COLUMN "customerId" TEXT`) || added;
+  added = addColumnIfMissing(db, "CountSession", "customerName", `ALTER TABLE "CountSession" ADD COLUMN "customerName" TEXT`) || added;
+  added = addColumnIfMissing(db, "CountRecord", "customerId", `ALTER TABLE "CountRecord" ADD COLUMN "customerId" TEXT`) || added;
+  added = addColumnIfMissing(db, "CountRecord", "customerName", `ALTER TABLE "CountRecord" ADD COLUMN "customerName" TEXT`) || added;
+  if (tableExists(db, "CountRecord")) {
+    db.exec(`CREATE INDEX IF NOT EXISTS "CountRecord_customerId_idx" ON "CountRecord"("customerId")`);
+  }
+
+  const customerOk = tableExists(db, "Customer");
+  const sessionOk = !tableExists(db, "CountSession") || columnNames(db, "CountSession").includes("customerName");
+  const countOk = !tableExists(db, "CountRecord") || columnNames(db, "CountRecord").includes("customerName");
+  const ready = customerOk && sessionOk && countOk;
+  let recorded = false;
+  if (ready) {
+    recorded = recordMigration(db, { name: CUSTOMERS_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added customer shipping fields without touching existing rows");
+    if (recorded) console.log("[start] recorded prisma migration", CUSTOMERS_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
 function ensureSqliteSchema(databaseUrl, options = {}) {
   const cwd = options.cwd || process.cwd();
   const migrationsDir = options.migrationsDir || path.join(cwd, "prisma", "migrations");
@@ -130,6 +178,11 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
     if (!tableExists(db, "Miscount")) {
       return { ok: false, reason: "miscount-still-missing", dbPath, added, recorded, miscountAdded };
     }
+
+    const customers = ensureCustomers(db, migrationsDir);
+    if (!customers.ok) {
+      return { ok: false, reason: "customers-still-missing", dbPath, added, recorded, miscountAdded, customers };
+    }
     return {
       ok: true,
       dbPath,
@@ -137,6 +190,8 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
       recorded,
       miscountAdded,
       miscountRecorded: miscountRecord.recorded,
+      customersAdded: customers.added,
+      customersRecorded: customers.recorded,
     };
   } finally {
     db.close();
@@ -146,6 +201,7 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
 module.exports = {
   SIZE_COLOR_MIGRATION,
   MISCOUNT_MIGRATION,
+  CUSTOMERS_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 };

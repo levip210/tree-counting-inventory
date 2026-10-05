@@ -10,6 +10,8 @@ export type IncomingCount = {
   action: ActionType;
   farmId?: string | null;
   farmName?: string | null;
+  customerId?: string | null;
+  customerName?: string | null;
   sizeId: string;
   sizeName: string;
   gradeId: string;
@@ -66,6 +68,8 @@ export function sanitizeCount(raw: Record<string, unknown>): IncomingCount | { e
       action,
       farmId,
       farmName,
+      customerId: null,
+      customerName: null,
       sizeId,
       sizeName,
       gradeId,
@@ -76,12 +80,17 @@ export function sanitizeCount(raw: Record<string, unknown>): IncomingCount | { e
     };
   }
 
+  const customerId = String(clean.customerId || "").trim();
+  const customerName = String(clean.customerName || "").trim();
+  if (!customerId || !customerName) return { error: "Customer is required for Shipping." };
   return {
     clientSyncId,
     timestampLocal,
     action,
     farmId: null,
     farmName: null,
+    customerId,
+    customerName,
     sizeId,
     sizeName,
     gradeId,
@@ -155,6 +164,23 @@ export async function syncCounts(session: SessionPayload, rawCounts: unknown[]) 
       }
     }
 
+    let customerId: string | null = null;
+    let customerName: string | null = null;
+    if (sanitized.action === ACTIONS.SHIP) {
+      const customer = sanitized.customerId
+        ? await prisma.customer.findUnique({ where: { id: sanitized.customerId } })
+        : null;
+      if (!customer || !customer.active) {
+        rejected.push({
+          clientSyncId: sanitized.clientSyncId,
+          error: "Select an active customer before counting.",
+        });
+        continue;
+      }
+      customerId = customer.id;
+      customerName = customer.name;
+    }
+
     const startedAt = sanitized.sessionStartedAt ? new Date(sanitized.sessionStartedAt) : new Date();
     await prisma.countSession.upsert({
       where: { id: sanitized.sessionId },
@@ -163,6 +189,8 @@ export async function syncCounts(session: SessionPayload, rawCounts: unknown[]) 
         action: sanitized.action,
         farmId: sanitized.farmId || null,
         farmName: sanitized.farmName || null,
+        customerId,
+        customerName,
         startedAt: Number.isNaN(startedAt.getTime()) ? new Date() : startedAt,
       },
       update: {},
@@ -176,6 +204,8 @@ export async function syncCounts(session: SessionPayload, rawCounts: unknown[]) 
         action: sanitized.action,
         farmId: sanitized.farmId || null,
         farmName: sanitized.farmName || null,
+        customerId,
+        customerName,
         sizeId: sanitized.sizeId,
         sizeName: sanitized.sizeName,
         gradeId: sanitized.gradeId,
@@ -268,6 +298,8 @@ export function publicCount(row: {
   action: string;
   farmId: string | null;
   farmName: string | null;
+  customerId: string | null;
+  customerName: string | null;
   sizeId: string;
   sizeName: string;
   gradeId: string;
@@ -288,6 +320,8 @@ export function publicCount(row: {
     action: row.action,
     farmId: row.farmId,
     farmName: row.farmName,
+    customerId: row.customerId,
+    customerName: row.customerName,
     sizeId: row.sizeId,
     sizeName: row.sizeName,
     gradeId: row.gradeId,

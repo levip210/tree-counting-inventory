@@ -23,6 +23,8 @@ export async function GET(req: NextRequest) {
       action: true,
       farmId: true,
       farmName: true,
+      customerId: true,
+      customerName: true,
       sizeId: true,
       sizeName: true,
       gradeId: true,

@@ -117,7 +117,11 @@ Rules:
 
 ## 11. Count on Shipping
 
-Home → **Shipping**. Same automatic grid. No farm, customer, or order. Action is saved as **Shipped**. Farm fields are blank.
+Home → **Shipping**. **Select a customer** first (required). The list scrolls and can be searched. Then the same size × grade grid. Action is saved as **Shipped** for that customer. Farm fields stay blank.
+
+**Change customer** asks for confirmation, resets **visible** session totals, and does **not** delete saved counts.
+
+Add and hide customers under **Admin → Customers**. That page also shows how many trees, sizes, and grades have been shipped to each customer.
 
 ## 12. Sound, vibration, and visual feedback
 

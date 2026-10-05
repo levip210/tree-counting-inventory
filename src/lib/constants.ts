@@ -28,6 +28,7 @@ export const CHECKLIST_STEPS = [
   { id: "grades", label: "Add / confirm tree grades", href: "/admin/grades" },
   { id: "order", label: "Arrange display order", href: "/admin/sizes" },
   { id: "counters", label: "Create counter-access accounts", href: "/admin/counters" },
+  { id: "customers", label: "Add shipping customers", href: "/admin/customers" },
   { id: "receiving", label: "Test Yard Receiving", href: "/receiving" },
   { id: "shipping", label: "Test Shipping", href: "/shipping" },
   { id: "feedback", label: "Test sound and vibration", href: "/admin/feedback" },
@@ -36,4 +37,4 @@ export const CHECKLIST_STEPS = [
 ] as const;
 
 export const INVENTORY_DISCLAIMER =
-  "Inventory here is category counting only: Yard trees ≈ Received − Shipped for each size and grade. This is not a full inventory-management system. It does not track individual trees, lots, or customer orders.";
+  "Inventory here is category counting only: Yard trees ≈ Received − Shipped for each size and grade. This is not a full inventory-management system. It does not track individual trees, lots, or customer orders. Shipping counts are saved to the customer selected on the tablet.";
