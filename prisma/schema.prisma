@@ -15,6 +15,8 @@ model AdminAccount {
   passwordHash String
   pinHash      String?
   pinKey       String?  @unique
+  /// Count-button side: "right" (default) or "left".
+  countHand    String   @default("right")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
@@ -27,6 +29,8 @@ model CounterAccount {
   pinKey       String   @unique
   active       Boolean  @default(true)
   access       String
+  /// Count-button side: "right" (default) or "left".
+  countHand    String   @default("right")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }

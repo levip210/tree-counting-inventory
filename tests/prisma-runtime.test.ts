@@ -12,6 +12,7 @@ import {
   SIZE_COLOR_MIGRATION,
   MISCOUNT_MIGRATION,
   CUSTOMERS_MIGRATION,
+  COUNT_HAND_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 } from "../scripts/ensure-sqlite-schema.cjs";
@@ -107,8 +108,18 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
       "id" TEXT NOT NULL PRIMARY KEY,
       "name" TEXT NOT NULL
     );
+    CREATE TABLE "AdminAccount" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL
+    );
+    CREATE TABLE "CounterAccount" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "accountLabel" TEXT NOT NULL
+    );
     INSERT INTO "TreeSize" VALUES ('size-1', '6-7 ft', 0, 1, datetime('now'), datetime('now'));
     INSERT INTO "Farm" VALUES ('farm-1', 'Home farm');
+    INSERT INTO "AdminAccount" VALUES ('admin-1', 'Levi');
+    INSERT INTO "CounterAccount" VALUES ('counter-1', 'Yard tablet');
   `);
   db.close();
 
@@ -154,6 +165,24 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
     .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
     .get(CUSTOMERS_MIGRATION) as { migration_name: string };
   assert.equal(customersMigration.migration_name, CUSTOMERS_MIGRATION);
+  const adminCols = again.prepare(`PRAGMA table_info("AdminAccount")`).all().map((c: { name: string }) => c.name);
+  const counterCols = again.prepare(`PRAGMA table_info("CounterAccount")`).all().map((c: { name: string }) => c.name);
+  assert.ok(adminCols.includes("countHand"));
+  assert.ok(counterCols.includes("countHand"));
+  const adminRow = again.prepare(`SELECT name, countHand FROM "AdminAccount"`).get() as { name: string; countHand: string };
+  const counterRow = again.prepare(`SELECT accountLabel, countHand FROM "CounterAccount"`).get() as {
+    accountLabel: string;
+    countHand: string;
+  };
+  assert.equal(adminRow.name, "Levi");
+  assert.equal(adminRow.countHand, "right");
+  assert.equal(counterRow.accountLabel, "Yard tablet");
+  assert.equal(counterRow.countHand, "right");
+  const countHandMigration = again
+    .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+    .get(COUNT_HAND_MIGRATION) as { migration_name: string };
+  assert.equal(countHandMigration.migration_name, COUNT_HAND_MIGRATION);
+  assert.equal(first.countHandAdded, true);
   again.close();
 
   const second = ensureSqliteSchema(`file:${dbPath}`);
@@ -181,6 +210,10 @@ test("prisma-migrate.cjs still adds TreeSize.color when the CLI cannot start", (
         "updatedAt" DATETIME NOT NULL
       );
       INSERT INTO "TreeSize" VALUES ('keep', '6-7 ft', 0, 1, datetime('now'), datetime('now'));
+      CREATE TABLE "AdminAccount" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL);
+      CREATE TABLE "CounterAccount" ("id" TEXT NOT NULL PRIMARY KEY, "accountLabel" TEXT NOT NULL);
+      INSERT INTO "AdminAccount" VALUES ('admin-keep', 'Levi');
+      INSERT INTO "CounterAccount" VALUES ('counter-keep', 'Yard');
     `);
     db.close();
 
@@ -210,6 +243,20 @@ test("prisma-migrate.cjs still adds TreeSize.color when the CLI cannot start", (
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'Customer'`)
       .get() as { name: string } | undefined;
     assert.equal(customer?.name, "Customer");
+    const adminCols = check.prepare(`PRAGMA table_info("AdminAccount")`).all().map((c: { name: string }) => c.name);
+    const keptAdmin = check.prepare(`SELECT name, countHand FROM "AdminAccount"`).get() as {
+      name: string;
+      countHand: string;
+    };
+    const keptCounter = check.prepare(`SELECT accountLabel, countHand FROM "CounterAccount"`).get() as {
+      accountLabel: string;
+      countHand: string;
+    };
+    assert.ok(adminCols.includes("countHand"));
+    assert.equal(keptAdmin.name, "Levi");
+    assert.equal(keptAdmin.countHand, "right");
+    assert.equal(keptCounter.accountLabel, "Yard");
+    assert.equal(keptCounter.countHand, "right");
     check.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -244,6 +291,10 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
       VALUES ('farm-keep','Home farm',0,1,datetime('now'),datetime('now'))`);
     db.exec(`INSERT INTO "TreeSize" ("id","name","displayOrder","active","createdAt","updatedAt")
       VALUES ('size-keep','6-7 ft',0,1,datetime('now'),datetime('now'))`);
+    db.exec(`INSERT INTO "AdminAccount" ("id","name","email","passwordHash","createdAt","updatedAt")
+      VALUES ('admin-keep','Levi','levi@example.com','hash',datetime('now'),datetime('now'))`);
+    db.exec(`INSERT INTO "CounterAccount" ("id","accountLabel","pinHash","pinKey","active","access","createdAt","updatedAt")
+      VALUES ('counter-keep','Yard','hash','key-keep',1,'both',datetime('now'),datetime('now'))`);
     db.close();
 
     const result = spawnSync(process.execPath, [migrateScript], {
@@ -289,6 +340,25 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
     assert.ok(customersApplied);
     const farmStill = check.prepare(`SELECT name FROM "Farm" WHERE id = 'farm-keep'`).get() as { name: string };
     assert.equal(farmStill.name, "Home farm");
+    const adminCols = check.prepare(`PRAGMA table_info("AdminAccount")`).all().map((c: { name: string }) => c.name);
+    const counterCols = check.prepare(`PRAGMA table_info("CounterAccount")`).all().map((c: { name: string }) => c.name);
+    assert.ok(adminCols.includes("countHand"));
+    assert.ok(counterCols.includes("countHand"));
+    const keptAdmin = check.prepare(`SELECT name, countHand FROM "AdminAccount" WHERE id = 'admin-keep'`).get() as {
+      name: string;
+      countHand: string;
+    };
+    const keptCounter = check
+      .prepare(`SELECT accountLabel, countHand FROM "CounterAccount" WHERE id = 'counter-keep'`)
+      .get() as { accountLabel: string; countHand: string };
+    assert.equal(keptAdmin.name, "Levi");
+    assert.equal(keptAdmin.countHand, "right");
+    assert.equal(keptCounter.accountLabel, "Yard");
+    assert.equal(keptCounter.countHand, "right");
+    const countHandApplied = check
+      .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+      .get(COUNT_HAND_MIGRATION);
+    assert.ok(countHandApplied);
     check.close();
   } finally {
     rmSync(dest, { recursive: true, force: true });

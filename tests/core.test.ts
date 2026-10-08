@@ -788,6 +788,122 @@ test("tree sizes store optional color without touching grades", async () => {
   assert.equal("color" in grade, false);
 });
 
+test("count hand persists per account and defaults when missing", async () => {
+  const { normalizeCountHand, countGridColumns } = await import("../src/lib/count-hand");
+  const { getCountHand, setCountHand } = await import("../src/server/count-hand");
+  const { GET: catalogGet } = await import("../src/app/api/catalog/route");
+  const { PATCH } = await import("../src/app/api/auth/me/route");
+  const { NextRequest } = await import("next/server");
+  const { signSession } = await import("../src/lib/session-edge");
+
+  assert.equal(normalizeCountHand(undefined), "right");
+  assert.equal(normalizeCountHand(null), "right");
+  assert.equal(normalizeCountHand(""), "right");
+  assert.equal(normalizeCountHand("right"), "right");
+  assert.equal(normalizeCountHand("LEFT"), "right");
+  assert.equal(normalizeCountHand("left"), "left");
+  assert.match(countGridColumns("right", 3), /^minmax\(4\.5rem, 7\.5rem\) repeat\(3, minmax\(0, 1fr\)\)$/);
+  assert.match(countGridColumns("left", 4), /^repeat\(4, minmax\(0, 1fr\)\) minmax\(4\.5rem, 7\.5rem\)$/);
+
+  const admin = await prisma.adminAccount.findFirstOrThrow();
+  const adminSession = { role: "admin" as const, adminId: admin.id, access: "admin" as const, name: admin.name };
+  assert.equal(await getCountHand(adminSession), "right");
+
+  const counter = await prisma.counterAccount.create({
+    data: {
+      accountLabel: "Left counter",
+      pinHash: "x",
+      pinKey: "count-hand-test-pin-key",
+      access: "both",
+      active: true,
+      updatedAt: new Date(),
+    },
+  });
+  const counterSession = {
+    role: "counter" as const,
+    counterId: counter.id,
+    access: "both" as const,
+    name: counter.accountLabel,
+  };
+  assert.equal(await getCountHand(counterSession), "right");
+
+  await prisma.$executeRaw`UPDATE "AdminAccount" SET "countHand" = 'sideways' WHERE "id" = ${admin.id}`;
+  assert.equal(await getCountHand(adminSession), "right");
+
+  assert.equal(await setCountHand(adminSession, "left"), "left");
+  assert.equal(await setCountHand(counterSession, "left"), "left");
+  assert.equal(await getCountHand(adminSession), "left");
+  assert.equal(await getCountHand(counterSession), "left");
+  await setCountHand(counterSession, "right");
+  assert.equal(await getCountHand(counterSession), "right");
+  assert.equal(await getCountHand(adminSession), "left");
+
+  const adminToken = await signSession(adminSession);
+  const counterToken = await signSession(counterSession);
+  const anon = await PATCH(
+    new NextRequest("http://localhost/api/auth/me", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ countHand: "left" }),
+    }),
+  );
+  assert.equal(anon.status, 401);
+  const bad = await PATCH(
+    new NextRequest("http://localhost/api/auth/me", {
+      method: "PATCH",
+      headers: { cookie: `ptf_session=${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ countHand: "both" }),
+    }),
+  );
+  assert.equal(bad.status, 400);
+
+  const saved = await PATCH(
+    new NextRequest("http://localhost/api/auth/me", {
+      method: "PATCH",
+      headers: { cookie: `ptf_session=${counterToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ countHand: "left" }),
+    }),
+  );
+  assert.equal(saved.status, 200);
+  assert.equal(((await saved.json()) as { countHand: string }).countHand, "left");
+  const counterRow = await prisma.counterAccount.findUniqueOrThrow({
+    where: { id: counter.id },
+    select: { countHand: true },
+  });
+  assert.equal(counterRow.countHand, "left");
+  const adminStill = await prisma.adminAccount.findUniqueOrThrow({
+    where: { id: admin.id },
+    select: { countHand: true },
+  });
+  assert.equal(adminStill.countHand, "left");
+
+  const catalog = await catalogGet(
+    new NextRequest("http://localhost/api/catalog", { headers: { cookie: `ptf_session=${adminToken}` } }),
+  );
+  assert.equal(catalog.status, 200);
+  assert.equal(((await catalog.json()) as { countHand: string }).countHand, "left");
+
+  await prisma.$executeRawUnsafe(`ALTER TABLE "AdminAccount" DROP COLUMN "countHand"`);
+  await prisma.$executeRawUnsafe(`ALTER TABLE "CounterAccount" DROP COLUMN "countHand"`);
+  try {
+    assert.equal(await getCountHand(adminSession), "right");
+    assert.equal(await getCountHand(counterSession), "right");
+    const selected = await prisma.adminAccount.findUnique({
+      where: { id: admin.id },
+      select: { id: true, name: true },
+    });
+    assert.equal(selected?.id, admin.id);
+    const still = await catalogGet(
+      new NextRequest("http://localhost/api/catalog", { headers: { cookie: `ptf_session=${adminToken}` } }),
+    );
+    assert.equal(still.status, 200);
+    assert.equal(((await still.json()) as { countHand: string }).countHand, "right");
+  } finally {
+    await prisma.$executeRawUnsafe(`ALTER TABLE "AdminAccount" ADD COLUMN "countHand" TEXT NOT NULL DEFAULT 'right'`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "CounterAccount" ADD COLUMN "countHand" TEXT NOT NULL DEFAULT 'right'`);
+  }
+});
+
 test("cleanup temp database", async () => {
   await prisma.$disconnect();
   rmSync(dir, { recursive: true, force: true });
