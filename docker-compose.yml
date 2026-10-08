@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: file:/app/data/app.db
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in .env}
+      APP_TIMEZONE: America/New_York
+      NODE_ENV: production
+    volumes:
+      - ptf-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  ptf-data:
