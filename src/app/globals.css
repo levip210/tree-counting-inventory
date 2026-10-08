@@ -136,6 +136,17 @@ a { color: inherit; }
 .btn.ghost { background: transparent; border: 2px solid currentColor; color: inherit; }
 .btn.cream { background: var(--cream); color: var(--ink); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.require-farm-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.2;
+  max-width: 100%;
+}
 
 .alert {
   border-radius: 12px;

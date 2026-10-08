@@ -11,7 +11,12 @@ type Item = {
   active: boolean;
   countTotal: number;
   color?: string | null;
+  requireFarm?: boolean;
 };
+
+function farmRequired(item: Item) {
+  return item.requireFarm !== false;
+}
 
 export function CategoryManager({ kind, title, suggested }: { kind: "size" | "grade"; title: string; suggested: string[] }) {
   const [items, setItems] = useState<Item[]>([]);
@@ -76,6 +81,9 @@ export function CategoryManager({ kind, title, suggested }: { kind: "size" | "gr
           Optional color: pick any color or paste a hex value. Counting tablets show it on size labels so crew can glance at color instead of reading the name. Leave empty for no color. Grades do not have colors.
         </p>
       ) : null}
+      <p style={{ color: "#5c5648" }}>
+        Require farm to have this stays On unless you turn it Off. Yard Receiving blocks a size and grade together only when both are On and that pair is missing from the farm&apos;s starting inventory. Turning either one Off lets the pair be counted anyway. Shipping is not affected.
+      </p>
       {msg ? <div className="alert info">{msg}</div> : null}
       <div className="row">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder={`New ${title.toLowerCase()}`} />
@@ -106,6 +114,14 @@ export function CategoryManager({ kind, title, suggested }: { kind: "size" | "gr
                       }
                     }}
                   />
+                  <button
+                    className={farmRequired(item) ? "btn gold require-farm-toggle" : "btn cream require-farm-toggle"}
+                    type="button"
+                    aria-pressed={farmRequired(item)}
+                    onClick={() => void patch({ id: item.id, requireFarm: !farmRequired(item) })}
+                  >
+                    Require farm to have this: {farmRequired(item) ? "On" : "Off"}
+                  </button>
                 </td>
                 {showColor ? (
                   <td>

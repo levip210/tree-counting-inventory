@@ -87,8 +87,8 @@ export async function farmProgress() {
   const [inventory, farms, sizes, grades, counts] = await Promise.all([
     prisma.startingInventory.findMany(),
     prisma.farm.findMany(),
-    prisma.treeSize.findMany(),
-    prisma.treeGrade.findMany(),
+    prisma.treeSize.findMany({ select: { id: true, name: true } }),
+    prisma.treeGrade.findMany({ select: { id: true, name: true } }),
     prisma.countRecord.findMany({
       where: { action: ACTIONS.YARD, voidedAt: null },
       select: { farmId: true, sizeId: true, gradeId: true, quantity: true },

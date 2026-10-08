@@ -4,13 +4,21 @@ import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { useRouter } from "next/navigation";
 import { ACTIONS, DOUBLE_TAP_MS } from "@/lib/constants";
 import { countGridColumns, normalizeCountHand, type CountHand } from "@/lib/count-hand";
+import { yardCellNeedsFarmList } from "@/lib/require-farm";
 import { api, exactLocalTimestamp, newId } from "@/lib/client";
 import { allPending, cacheCatalog, pendingCount, queueCount, readCachedCatalog, removePending, type PendingCount } from "@/lib/offline";
 import { playFeedback } from "@/lib/feedback";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SizeNameChip } from "./SizeColor";
 
-type Cat = { id: string; name: string; displayOrder: number; active: boolean; color?: string | null };
+type Cat = {
+  id: string;
+  name: string;
+  displayOrder: number;
+  active: boolean;
+  color?: string | null;
+  requireFarm?: boolean;
+};
 type Farm = Cat;
 type Progress = {
   farmId: string;
@@ -345,7 +353,11 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     };
 
     const meta: TapMeta = { key, size: size.name, grade: grade.name, color: size.color || null };
-    const onFarmList = mode !== "yard" || !farm || farmCarries(farm.id, size.id, grade.id);
+    const onFarmList =
+      mode !== "yard" ||
+      !farm ||
+      !yardCellNeedsFarmList(size.requireFarm, grade.requireFarm) ||
+      farmCarries(farm.id, size.id, grade.id);
 
     try {
       await queueCount(count);

@@ -60,6 +60,8 @@ model TreeSize {
   name         String
   /// Optional #RRGGBB for counting labels. Null/empty means no color.
   color        String?
+  /// When true (default), Yard Receiving counts this size only if the farm lists it.
+  requireFarm  Boolean             @default(true)
   displayOrder Int                 @default(0)
   active       Boolean             @default(true)
   createdAt    DateTime            @default(now())
@@ -70,6 +72,8 @@ model TreeSize {
 model TreeGrade {
   id           String              @id @default(cuid())
   name         String
+  /// When true (default), Yard Receiving counts this grade only if the farm lists it.
+  requireFarm  Boolean             @default(true)
   displayOrder Int                 @default(0)
   active       Boolean             @default(true)
   createdAt    DateTime            @default(now())

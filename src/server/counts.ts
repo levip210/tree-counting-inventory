@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma";
 import { stripIdentity } from "../lib/guards";
 import type { SessionPayload } from "../lib/session";
 import { counterFromSession, farmCarriesSizeGrade } from "./miscounts";
+import { yardCellNeedsFarmRecord } from "./require-farm";
 
 export type IncomingCount = {
   clientSyncId: string;
@@ -151,7 +152,8 @@ export async function syncCounts(session: SessionPayload, rawCounts: unknown[]) 
     }
 
     if (sanitized.action === ACTIONS.YARD && sanitized.farmId) {
-      const carries = await farmCarriesSizeGrade(sanitized.farmId, sanitized.sizeId, sanitized.gradeId);
+      const needsList = await yardCellNeedsFarmRecord(sanitized.sizeId, sanitized.gradeId);
+      const carries = !needsList || (await farmCarriesSizeGrade(sanitized.farmId, sanitized.sizeId, sanitized.gradeId));
       if (!carries) {
         const recorded = await recordMiscount(session, sanitized);
         accepted.push({
@@ -225,8 +227,8 @@ export async function syncCounts(session: SessionPayload, rawCounts: unknown[]) 
 async function recordMiscount(session: SessionPayload, sanitized: IncomingCount) {
   const [farm, size, grade] = await Promise.all([
     sanitized.farmId ? prisma.farm.findUnique({ where: { id: sanitized.farmId } }) : Promise.resolve(null),
-    prisma.treeSize.findUnique({ where: { id: sanitized.sizeId } }),
-    prisma.treeGrade.findUnique({ where: { id: sanitized.gradeId } }),
+    prisma.treeSize.findUnique({ where: { id: sanitized.sizeId }, select: { name: true } }),
+    prisma.treeGrade.findUnique({ where: { id: sanitized.gradeId }, select: { name: true } }),
   ]);
   const who = counterFromSession(session);
   const now = new Date();

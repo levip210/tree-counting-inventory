@@ -49,8 +49,8 @@ export type SizeGradeTotal = {
 export async function customerShippingReport() {
   const [customers, sizes, grades, counts, unassigned] = await Promise.all([
     prisma.customer.findMany({ orderBy: [{ displayOrder: "asc" }, { name: "asc" }] }),
-    prisma.treeSize.findMany({ orderBy: { displayOrder: "asc" } }),
-    prisma.treeGrade.findMany({ orderBy: { displayOrder: "asc" } }),
+    prisma.treeSize.findMany({ orderBy: { displayOrder: "asc" }, select: { id: true, name: true } }),
+    prisma.treeGrade.findMany({ orderBy: { displayOrder: "asc" }, select: { id: true, name: true } }),
     prisma.countRecord.findMany({
       where: { action: ACTIONS.SHIP, voidedAt: null, customerId: { not: null } },
       select: {

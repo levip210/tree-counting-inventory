@@ -904,6 +904,198 @@ test("count hand persists per account and defaults when missing", async () => {
   }
 });
 
+test("require farm defaults on and either off skips the yard inventory check", async () => {
+  const { requireFarmOn, yardCellNeedsFarmList } = await import("../src/lib/require-farm");
+  const { yardCellNeedsFarmRecord } = await import("../src/server/require-farm");
+  const { GET, PATCH } = await import("../src/app/api/admin/categories/route");
+  const { GET: catalogGet } = await import("../src/app/api/catalog/route");
+  const { NextRequest } = await import("next/server");
+  const { signSession } = await import("../src/lib/session-edge");
+
+  assert.equal(requireFarmOn(undefined), true);
+  assert.equal(requireFarmOn(null), true);
+  assert.equal(requireFarmOn(""), true);
+  assert.equal(requireFarmOn(true), true);
+  assert.equal(requireFarmOn(1), true);
+  assert.equal(requireFarmOn(false), false);
+  assert.equal(requireFarmOn(0), false);
+  assert.equal(requireFarmOn("false"), false);
+  assert.equal(requireFarmOn("0"), false);
+  assert.equal(yardCellNeedsFarmList(true, true), true);
+  assert.equal(yardCellNeedsFarmList(false, true), false);
+  assert.equal(yardCellNeedsFarmList(true, false), false);
+  assert.equal(yardCellNeedsFarmList(false, false), false);
+  assert.equal(yardCellNeedsFarmList(undefined, undefined), true);
+  assert.equal(yardCellNeedsFarmList(null, true), true);
+
+  const sizes = await prisma.treeSize.findMany({ orderBy: { displayOrder: "asc" } });
+  const grades = await prisma.treeGrade.findMany({ orderBy: { displayOrder: "asc" } });
+  const size = sizes[0]!;
+  const grade = grades[0]!;
+  assert.equal(size.requireFarm, true);
+  assert.equal(grade.requireFarm, true);
+  assert.equal(sizes.every((row) => row.requireFarm === true), true);
+  assert.equal(grades.every((row) => row.requireFarm === true), true);
+
+  const farm = await prisma.farm.create({
+    data: { name: "Toggle farm", displayOrder: 50, active: true, updatedAt: new Date() },
+  });
+  const session = { role: "counter" as const, access: "yard" as const, name: "Toggle crew", counterId: "counter-toggle" };
+  const base = {
+    timestampLocal: "2026-10-08T12:00:00.000-04:00",
+    action: constants.ACTIONS.YARD,
+    farmId: farm.id,
+    farmName: farm.name,
+    sizeId: size.id,
+    sizeName: size.name,
+    gradeId: grade.id,
+    gradeName: grade.name,
+    quantity: 1,
+    sessionId: "session-toggle",
+    sessionStartedAt: new Date().toISOString(),
+  };
+
+  const blocked = await counts.syncCounts(session, [{ ...base, clientSyncId: "toggle-blocked" }]);
+  assert.equal(blocked.accepted[0]?.miscount, true);
+  assert.equal(await prisma.countRecord.count({ where: { clientSyncId: "toggle-blocked" } }), 0);
+  assert.equal(await prisma.miscount.count({ where: { clientSyncId: "toggle-blocked" } }), 1);
+
+  await prisma.treeGrade.update({ where: { id: grade.id }, data: { requireFarm: false } });
+  const gradeOff = await counts.syncCounts(session, [{ ...base, clientSyncId: "toggle-grade-off" }]);
+  assert.equal(gradeOff.accepted[0]?.miscount, false);
+  assert.equal(await prisma.countRecord.count({ where: { clientSyncId: "toggle-grade-off", voidedAt: null } }), 1);
+
+  await prisma.treeGrade.update({ where: { id: grade.id }, data: { requireFarm: true } });
+  await prisma.treeSize.update({ where: { id: size.id }, data: { requireFarm: false } });
+  const sizeOff = await counts.syncCounts(session, [{ ...base, clientSyncId: "toggle-size-off" }]);
+  assert.equal(sizeOff.accepted[0]?.miscount, false);
+  assert.equal(await prisma.countRecord.count({ where: { clientSyncId: "toggle-size-off", voidedAt: null } }), 1);
+
+  await prisma.treeSize.update({ where: { id: size.id }, data: { requireFarm: true } });
+  const bothOn = await counts.syncCounts(session, [{ ...base, clientSyncId: "toggle-both-on" }]);
+  assert.equal(bothOn.accepted[0]?.miscount, true);
+  assert.equal(await prisma.countRecord.count({ where: { clientSyncId: "toggle-both-on" } }), 0);
+
+  const buyer =
+    (await prisma.customer.findFirst({ where: { active: true } })) ??
+    (await prisma.customer.create({ data: { name: "Toggle buyer", displayOrder: 9, active: true } }));
+  const ship = await counts.syncCounts(
+    { role: "counter" as const, access: "shipping" as const, name: "Ship crew", counterId: "counter-toggle-ship" },
+    [
+      {
+        ...base,
+        clientSyncId: "toggle-ship",
+        action: constants.ACTIONS.SHIP,
+        farmId: null,
+        farmName: null,
+        customerId: buyer.id,
+        customerName: "Wrong label",
+      },
+    ],
+  );
+  assert.equal(ship.accepted[0]?.miscount, false);
+  const shipped = await prisma.countRecord.findUniqueOrThrow({ where: { clientSyncId: "toggle-ship" } });
+  assert.equal(shipped.customerId, buyer.id);
+  assert.equal(shipped.farmId, null);
+
+  const admin = await prisma.adminAccount.findFirstOrThrow();
+  const adminToken = await signSession({
+    role: "admin",
+    adminId: admin.id,
+    access: "admin",
+    name: admin.name,
+  });
+  const counterToken = await signSession(session);
+  const counterPatch = await PATCH(
+    new NextRequest("http://localhost/api/admin/categories", {
+      method: "PATCH",
+      headers: { cookie: `ptf_session=${counterToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "grade", id: grade.id, requireFarm: false }),
+    }),
+  );
+  assert.equal(counterPatch.status, 401);
+  const gradeStill = await prisma.treeGrade.findUniqueOrThrow({ where: { id: grade.id }, select: { requireFarm: true } });
+  assert.equal(gradeStill.requireFarm, true);
+
+  const adminPatch = await PATCH(
+    new NextRequest("http://localhost/api/admin/categories", {
+      method: "PATCH",
+      headers: { cookie: `ptf_session=${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "size", id: size.id, requireFarm: false }),
+    }),
+  );
+  assert.equal(adminPatch.status, 200);
+  assert.equal(((await adminPatch.json()) as { item: { requireFarm: boolean } }).item.requireFarm, false);
+
+  const adminGet = await GET(
+    new NextRequest("http://localhost/api/admin/categories?kind=size", {
+      headers: { cookie: `ptf_session=${adminToken}` },
+    }),
+  );
+  assert.equal(adminGet.status, 200);
+  const listed = ((await adminGet.json()) as { items: { id: string; requireFarm: boolean }[] }).items.find(
+    (row) => row.id === size.id,
+  );
+  assert.equal(listed?.requireFarm, false);
+
+  const counterGet = await GET(
+    new NextRequest("http://localhost/api/admin/categories?kind=size", {
+      headers: { cookie: `ptf_session=${counterToken}` },
+    }),
+  );
+  assert.equal(counterGet.status, 401);
+
+  const catalog = await catalogGet(
+    new NextRequest("http://localhost/api/catalog", { headers: { cookie: `ptf_session=${counterToken}` } }),
+  );
+  assert.equal(catalog.status, 200);
+  const catalogBody = (await catalog.json()) as {
+    sizes: { id: string; requireFarm: boolean }[];
+    grades: { id: string; requireFarm: boolean }[];
+  };
+  assert.equal(catalogBody.sizes.find((row) => row.id === size.id)?.requireFarm, false);
+  assert.equal(catalogBody.grades.find((row) => row.id === grade.id)?.requireFarm, true);
+
+  await prisma.$executeRawUnsafe(`ALTER TABLE "TreeSize" DROP COLUMN "requireFarm"`);
+  await prisma.$executeRawUnsafe(`ALTER TABLE "TreeGrade" DROP COLUMN "requireFarm"`);
+  try {
+    assert.equal(await yardCellNeedsFarmRecord(size.id, grade.id), true);
+    const stillBlocked = await counts.syncCounts(session, [{ ...base, clientSyncId: "toggle-missing-col" }]);
+    assert.equal(stillBlocked.accepted[0]?.miscount, true);
+    const still = await catalogGet(
+      new NextRequest("http://localhost/api/catalog", { headers: { cookie: `ptf_session=${counterToken}` } }),
+    );
+    assert.equal(still.status, 200);
+    const fallback = (await still.json()) as {
+      sizes: { requireFarm: boolean }[];
+      grades: { requireFarm: boolean }[];
+    };
+    assert.equal(fallback.sizes.every((row) => row.requireFarm === true), true);
+    assert.equal(fallback.grades.every((row) => row.requireFarm === true), true);
+    const adminStill = await GET(
+      new NextRequest("http://localhost/api/admin/categories?kind=grade", {
+        headers: { cookie: `ptf_session=${adminToken}` },
+      }),
+    );
+    assert.equal(adminStill.status, 200);
+    const gradeItems = ((await adminStill.json()) as { items: { requireFarm: boolean }[] }).items;
+    assert.equal(gradeItems.every((row) => row.requireFarm === true), true);
+    const missingPatch = await PATCH(
+      new NextRequest("http://localhost/api/admin/categories", {
+        method: "PATCH",
+        headers: { cookie: `ptf_session=${adminToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ kind: "grade", id: grade.id, requireFarm: false }),
+      }),
+    );
+    assert.equal(missingPatch.status, 503);
+  } finally {
+    await prisma.$executeRawUnsafe(`ALTER TABLE "TreeSize" ADD COLUMN "requireFarm" BOOLEAN NOT NULL DEFAULT true`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "TreeGrade" ADD COLUMN "requireFarm" BOOLEAN NOT NULL DEFAULT true`);
+    await prisma.treeSize.updateMany({ data: { requireFarm: true } });
+    await prisma.treeGrade.updateMany({ data: { requireFarm: true } });
+  }
+});
+
 test("cleanup temp database", async () => {
   await prisma.$disconnect();
   rmSync(dir, { recursive: true, force: true });
