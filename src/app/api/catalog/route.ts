@@ -3,6 +3,7 @@ import { errorJson, json } from "@/lib/session";
 import { requireAccess, sessionFromRequest } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
 import { farmProgress } from "@/server/dashboard";
+import { getCountHand } from "@/server/count-hand";
 
 export const runtime = "nodejs";
 
@@ -20,6 +21,7 @@ export async function GET(req: NextRequest) {
     prisma.appSettings.findUnique({ where: { id: "default" } }),
     farmProgress(),
   ]);
+  const countHand = await getCountHand(session);
   return json({
     farms,
     customers,
@@ -28,5 +30,6 @@ export async function GET(req: NextRequest) {
     soundEnabled: settings?.soundEnabled ?? true,
     vibrationEnabled: settings?.vibrationEnabled ?? true,
     startingProgress: progress,
+    countHand,
   });
 }

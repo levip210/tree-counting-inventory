@@ -36,6 +36,10 @@ export async function POST(req: NextRequest) {
     data.passwordHash = await hashSecret(body.newPassword);
   }
   if (body.name) data.name = body.name.trim();
-  const admin = await prisma.adminAccount.update({ where: { id: session.adminId }, data });
+  const admin = await prisma.adminAccount.update({
+    where: { id: session.adminId },
+    data,
+    select: { id: true, name: true, email: true },
+  });
   return json({ ok: true, admin: { id: admin.id, name: admin.name, email: admin.email } });
 }

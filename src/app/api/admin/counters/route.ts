@@ -50,7 +50,7 @@ export async function PATCH(req: NextRequest) {
   if (!session || session.role !== "admin") return errorJson("Admin sign-in required.", 401);
   const body = await req.json().catch(() => null);
   const id = String(body?.id || "");
-  const existing = await prisma.counterAccount.findUnique({ where: { id } });
+  const existing = await prisma.counterAccount.findUnique({ where: { id }, select: { id: true } });
   if (!existing) return errorJson("Account not found.", 404);
   const data: {
     accountLabel?: string;

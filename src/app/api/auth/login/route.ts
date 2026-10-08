@@ -23,7 +23,12 @@ export async function POST(req: NextRequest) {
 
   const email = normalizeEmail(body.email || "");
   const password = body.password || "";
-  const admin = email ? await prisma.adminAccount.findUnique({ where: { email } }) : null;
+  const admin = email
+    ? await prisma.adminAccount.findUnique({
+        where: { email },
+        select: { id: true, name: true, passwordHash: true },
+      })
+    : null;
   const ok = admin ? await verifySecret(password, admin.passwordHash) : false;
   if (!admin || !ok) {
     await recordFailure(scope);

@@ -4,9 +4,9 @@
  * Production safety net for SQLite on the Railway volume.
  *
  * If `prisma migrate deploy` hiccups, the Next app still starts (CMD uses `;`)
- * and then P2022s on TreeSize.color. This adds the column when missing without
- * dropping tables or rewriting farm data, and records the Prisma migration so a
- * later successful migrate does not try ADD COLUMN twice.
+ * and then P2022s on a missing column. This adds known columns when missing
+ * without dropping tables or rewriting farm data, and records the Prisma
+ * migration so a later successful migrate does not try ADD COLUMN twice.
  */
 const fs = require("fs");
 const path = require("path");
@@ -15,6 +15,7 @@ const crypto = require("crypto");
 const SIZE_COLOR_MIGRATION = "20260915180000_size_color";
 const MISCOUNT_MIGRATION = "20260925170000_miscount";
 const CUSTOMERS_MIGRATION = "20261005180000_customers";
+const COUNT_HAND_MIGRATION = "20261008153000_count_hand";
 
 const CUSTOMER_TABLE_SQL = `CREATE TABLE "Customer" (
     "id" TEXT NOT NULL PRIMARY KEY,
@@ -125,6 +126,37 @@ function ensureCustomers(db, migrationsDir) {
   return { ok: ready, added, recorded };
 }
 
+function ensureCountHand(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, COUNT_HAND_MIGRATION, "migration.sql");
+  let added = false;
+  added =
+    addColumnIfMissing(
+      db,
+      "AdminAccount",
+      "countHand",
+      `ALTER TABLE "AdminAccount" ADD COLUMN "countHand" TEXT NOT NULL DEFAULT 'right'`,
+    ) || added;
+  added =
+    addColumnIfMissing(
+      db,
+      "CounterAccount",
+      "countHand",
+      `ALTER TABLE "CounterAccount" ADD COLUMN "countHand" TEXT NOT NULL DEFAULT 'right'`,
+    ) || added;
+
+  const adminOk = !tableExists(db, "AdminAccount") || columnNames(db, "AdminAccount").includes("countHand");
+  const counterOk = !tableExists(db, "CounterAccount") || columnNames(db, "CounterAccount").includes("countHand");
+  const ready = adminOk && counterOk;
+  const tablesPresent = tableExists(db, "AdminAccount") || tableExists(db, "CounterAccount");
+  let recorded = false;
+  if (ready && tablesPresent) {
+    recorded = recordMigration(db, { name: COUNT_HAND_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added countHand without touching existing account rows");
+    if (recorded) console.log("[start] recorded prisma migration", COUNT_HAND_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
 function ensureSqliteSchema(databaseUrl, options = {}) {
   const cwd = options.cwd || process.cwd();
   const migrationsDir = options.migrationsDir || path.join(cwd, "prisma", "migrations");
@@ -183,6 +215,20 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
     if (!customers.ok) {
       return { ok: false, reason: "customers-still-missing", dbPath, added, recorded, miscountAdded, customers };
     }
+
+    const countHand = ensureCountHand(db, migrationsDir);
+    if (!countHand.ok) {
+      return {
+        ok: false,
+        reason: "count-hand-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+      };
+    }
     return {
       ok: true,
       dbPath,
@@ -192,6 +238,8 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
       miscountRecorded: miscountRecord.recorded,
       customersAdded: customers.added,
       customersRecorded: customers.recorded,
+      countHandAdded: countHand.added,
+      countHandRecorded: countHand.recorded,
     };
   } finally {
     db.close();
@@ -202,6 +250,7 @@ module.exports = {
   SIZE_COLOR_MIGRATION,
   MISCOUNT_MIGRATION,
   CUSTOMERS_MIGRATION,
+  COUNT_HAND_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 };

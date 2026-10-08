@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { ACTIONS, DOUBLE_TAP_MS } from "@/lib/constants";
+import { countGridColumns, normalizeCountHand, type CountHand } from "@/lib/count-hand";
 import { api, exactLocalTimestamp, newId } from "@/lib/client";
 import { allPending, cacheCatalog, pendingCount, queueCount, readCachedCatalog, removePending, type PendingCount } from "@/lib/offline";
 import { playFeedback } from "@/lib/feedback";
@@ -33,7 +34,19 @@ type Catalog = {
   soundEnabled: boolean;
   vibrationEnabled: boolean;
   startingProgress: Progress[];
+  countHand?: CountHand | null;
 };
+
+const PENDING_HAND = "ptf-count-hand-pending";
+
+function readPendingHand(): CountHand | null {
+  try {
+    const value = sessionStorage.getItem(PENDING_HAND);
+    return value === "left" || value === "right" ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   const router = useRouter();
@@ -58,12 +71,14 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   const [endOpen, setEndOpen] = useState(false);
   const [sound, setSound] = useState(true);
   const [vibe, setVibe] = useState(true);
+  const [hand, setHand] = useState<CountHand>("right");
   const lastTap = useRef<Record<string, number>>({});
   const undoStack = useRef<string[]>([]);
   const syncing = useRef(false);
   const appliedRef = useRef<Map<string, TapMeta>>(new Map());
   const heldRef = useRef<Map<string, TapMeta>>(new Map());
   const noticeTimer = useRef<number | null>(null);
+  const handSave = useRef(0);
 
   const storageKey = `ptf-${mode}`;
 
@@ -85,6 +100,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
       setCatalog(cached);
       setSound(cached.soundEnabled);
       setVibe(cached.vibrationEnabled);
+      setHand(readPendingHand() ?? normalizeCountHand(cached.countHand));
     }
     api<Catalog>("/api/catalog")
       .then((c) => {
@@ -92,6 +108,18 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
         setSound(c.soundEnabled);
         setVibe(c.vibrationEnabled);
         cacheCatalog(c);
+        const pending = readPendingHand();
+        if (pending && pending !== normalizeCountHand(c.countHand)) {
+          setHand(pending);
+          void persistHand(pending);
+        } else {
+          setHand(normalizeCountHand(c.countHand));
+          try {
+            sessionStorage.removeItem(PENDING_HAND);
+          } catch {
+            /* private mode */
+          }
+        }
       })
       .catch(() => undefined);
     pendingCount().then(setPending);
@@ -141,6 +169,39 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
         startedAt: ts,
       }),
     });
+  }
+
+  async function persistHand(next: CountHand) {
+    const ticket = ++handSave.current;
+    try {
+      sessionStorage.setItem(PENDING_HAND, next);
+    } catch {
+      /* private mode */
+    }
+    try {
+      await api("/api/auth/me", { method: "PATCH", body: JSON.stringify({ countHand: next }) });
+      if (handSave.current !== ticket) return;
+      try {
+        sessionStorage.removeItem(PENDING_HAND);
+      } catch {
+        /* private mode */
+      }
+      setCatalog((current) => {
+        if (!current) return current;
+        const updated = { ...current, countHand: next };
+        cacheCatalog(updated);
+        return updated;
+      });
+    } catch {
+      if (handSave.current !== ticket) return;
+      showNotice("Couldn't save hand preference yet. It will retry.");
+    }
+  }
+
+  function toggleHand() {
+    const next: CountHand = hand === "left" ? "right" : "left";
+    setHand(next);
+    void persistHand(next);
   }
 
   function showNotice(message: string) {
@@ -439,7 +500,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   }
 
   return (
-    <div className="screen">
+    <div className="screen counting-screen">
       {overlay ? <div className={`flash-overlay ${overlay}`} /> : null}
       {failMsg ? <div className="toast-fail">{failMsg}</div> : null}
       {notice ? <div className="toast-miscount">{notice}</div> : null}
@@ -450,6 +511,15 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
         </div>
         <strong>{mode === "yard" ? "Yard Receiving" : "Shipping"}</strong>
         <div className="row">
+          <button
+            className={`btn hand-toggle ${hand === "left" ? "gold" : "cream"}`}
+            type="button"
+            aria-pressed={hand === "left"}
+            aria-label={hand === "left" ? "Count buttons are on the left. Switch to the right." : "Count buttons are on the right. Switch to the left."}
+            onClick={toggleHand}
+          >
+            {hand === "left" ? "Buttons on left" : "Buttons on right"}
+          </button>
           <button className="btn cream" type="button" onClick={goFullscreen}>Fullscreen</button>
         </div>
       </div>
@@ -502,47 +572,54 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
       {sizes.length === 0 || grades.length === 0 ? (
         <div className="alert info">Ask an admin to add active sizes and grades. The counting grid is the cartesian product of those lists.</div>
       ) : (
-        <div className="count-wrap">
-          <table className="count-table">
-            <thead>
-              <tr>
-                <th />
-                {grades.map((g) => (
-                  <th key={g.id}>{g.name}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sizes.map((s) => (
-                <tr key={s.id}>
-                  <td className="size-lab">
+        <div className={`count-wrap hand-${hand}`} data-count-hand={hand}>
+          <div
+            className="count-grid"
+            style={{ gridTemplateColumns: countGridColumns(hand, grades.length) } as CSSProperties}
+          >
+            {hand === "right" ? <div className="count-corner" aria-hidden /> : null}
+            {grades.map((g) => (
+              <div key={g.id} className="grade-head">
+                {g.name}
+              </div>
+            ))}
+            {hand === "left" ? <div className="count-corner" aria-hidden /> : null}
+            {sizes.map((s) => (
+              <Fragment key={s.id}>
+                {hand === "right" ? (
+                  <div className="size-lab">
                     <SizeNameChip name={s.name} color={s.color} />
-                  </td>
-                  {grades.map((g) => {
-                    const key = cellKey(s.id, g.id);
-                    return (
-                      <td key={g.id}>
-                        <button
-                          type="button"
-                          className={`count-btn ${s.color ? "has-size-color" : ""} ${flashKey === key ? "flash" : ""}`}
-                          style={s.color ? ({ "--size-color": s.color } as CSSProperties) : undefined}
-                          onPointerDown={(e) => {
-                            e.preventDefault();
-                            void tap(s, g);
-                          }}
-                        >
-                          <span className="qty">{totals[key] || 0}</span>
-                          <small>
-                            <SizeNameChip name={s.name} color={s.color} compact /> {g.name}
-                          </small>
-                        </button>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                ) : null}
+                {grades.map((g) => {
+                  const key = cellKey(s.id, g.id);
+                  return (
+                    <button
+                      key={g.id}
+                      type="button"
+                      className={`count-btn ${s.color ? "has-size-color" : ""} ${flashKey === key ? "flash" : ""}`}
+                      style={s.color ? ({ "--size-color": s.color } as CSSProperties) : undefined}
+                      aria-label={`${s.name} ${g.name}, count ${totals[key] || 0}`}
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        void tap(s, g);
+                      }}
+                    >
+                      <span className="qty">{totals[key] || 0}</span>
+                      <small className="count-fit">
+                        {s.name} {g.name}
+                      </small>
+                    </button>
+                  );
+                })}
+                {hand === "left" ? (
+                  <div className="size-lab">
+                    <SizeNameChip name={s.name} color={s.color} />
+                  </div>
+                ) : null}
+              </Fragment>
+            ))}
+          </div>
         </div>
       )}
 
