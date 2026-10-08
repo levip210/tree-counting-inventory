@@ -13,6 +13,7 @@ import {
   MISCOUNT_MIGRATION,
   CUSTOMERS_MIGRATION,
   COUNT_HAND_MIGRATION,
+  REQUIRE_FARM_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 } from "../scripts/ensure-sqlite-schema.cjs";
@@ -104,6 +105,14 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
       "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" DATETIME NOT NULL
     );
+    CREATE TABLE "TreeGrade" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "displayOrder" INTEGER NOT NULL DEFAULT 0,
+      "active" BOOLEAN NOT NULL DEFAULT true,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL
+    );
     CREATE TABLE "Farm" (
       "id" TEXT NOT NULL PRIMARY KEY,
       "name" TEXT NOT NULL
@@ -117,6 +126,7 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
       "accountLabel" TEXT NOT NULL
     );
     INSERT INTO "TreeSize" VALUES ('size-1', '6-7 ft', 0, 1, datetime('now'), datetime('now'));
+    INSERT INTO "TreeGrade" VALUES ('grade-1', 'Premium', 0, 1, datetime('now'), datetime('now'));
     INSERT INTO "Farm" VALUES ('farm-1', 'Home farm');
     INSERT INTO "AdminAccount" VALUES ('admin-1', 'Levi');
     INSERT INTO "CounterAccount" VALUES ('counter-1', 'Yard tablet');
@@ -183,6 +193,24 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
     .get(COUNT_HAND_MIGRATION) as { migration_name: string };
   assert.equal(countHandMigration.migration_name, COUNT_HAND_MIGRATION);
   assert.equal(first.countHandAdded, true);
+  const sizeCols = again.prepare(`PRAGMA table_info("TreeSize")`).all().map((c: { name: string }) => c.name);
+  const gradeCols = again.prepare(`PRAGMA table_info("TreeGrade")`).all().map((c: { name: string }) => c.name);
+  assert.ok(sizeCols.includes("requireFarm"));
+  assert.ok(gradeCols.includes("requireFarm"));
+  const keptSize = again.prepare(`SELECT name, requireFarm FROM "TreeSize"`).get() as { name: string; requireFarm: number };
+  const keptGrade = again.prepare(`SELECT name, requireFarm FROM "TreeGrade"`).get() as {
+    name: string;
+    requireFarm: number;
+  };
+  assert.equal(keptSize.name, "6-7 ft");
+  assert.equal(keptSize.requireFarm, 1);
+  assert.equal(keptGrade.name, "Premium");
+  assert.equal(keptGrade.requireFarm, 1);
+  const requireFarmMigration = again
+    .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+    .get(REQUIRE_FARM_MIGRATION) as { migration_name: string };
+  assert.equal(requireFarmMigration.migration_name, REQUIRE_FARM_MIGRATION);
+  assert.equal(first.requireFarmAdded, true);
   again.close();
 
   const second = ensureSqliteSchema(`file:${dbPath}`);
@@ -190,6 +218,8 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
   assert.equal(second.added, false);
   assert.equal(second.recorded, false);
   assert.equal(second.miscountAdded, false);
+  assert.equal(second.requireFarmAdded, false);
+  assert.equal(second.requireFarmRecorded, false);
 
   rmSync(dir, { recursive: true, force: true });
 });
@@ -210,6 +240,15 @@ test("prisma-migrate.cjs still adds TreeSize.color when the CLI cannot start", (
         "updatedAt" DATETIME NOT NULL
       );
       INSERT INTO "TreeSize" VALUES ('keep', '6-7 ft', 0, 1, datetime('now'), datetime('now'));
+      CREATE TABLE "TreeGrade" (
+        "id" TEXT NOT NULL PRIMARY KEY,
+        "name" TEXT NOT NULL,
+        "displayOrder" INTEGER NOT NULL DEFAULT 0,
+        "active" BOOLEAN NOT NULL DEFAULT true,
+        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" DATETIME NOT NULL
+      );
+      INSERT INTO "TreeGrade" VALUES ('grade-keep', 'Premium', 0, 1, datetime('now'), datetime('now'));
       CREATE TABLE "AdminAccount" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL);
       CREATE TABLE "CounterAccount" ("id" TEXT NOT NULL PRIMARY KEY, "accountLabel" TEXT NOT NULL);
       INSERT INTO "AdminAccount" VALUES ('admin-keep', 'Levi');
@@ -257,6 +296,16 @@ test("prisma-migrate.cjs still adds TreeSize.color when the CLI cannot start", (
     assert.equal(keptAdmin.countHand, "right");
     assert.equal(keptCounter.accountLabel, "Yard");
     assert.equal(keptCounter.countHand, "right");
+    const sizeRequire = check.prepare(`PRAGMA table_info("TreeSize")`).all().map((c: { name: string }) => c.name);
+    const gradeRequire = check.prepare(`PRAGMA table_info("TreeGrade")`).all().map((c: { name: string }) => c.name);
+    assert.ok(sizeRequire.includes("requireFarm"));
+    assert.ok(gradeRequire.includes("requireFarm"));
+    const keptGrade = check.prepare(`SELECT name, requireFarm FROM "TreeGrade"`).get() as {
+      name: string;
+      requireFarm: number;
+    };
+    assert.equal(keptGrade.name, "Premium");
+    assert.equal(keptGrade.requireFarm, 1);
     check.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -291,6 +340,8 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
       VALUES ('farm-keep','Home farm',0,1,datetime('now'),datetime('now'))`);
     db.exec(`INSERT INTO "TreeSize" ("id","name","displayOrder","active","createdAt","updatedAt")
       VALUES ('size-keep','6-7 ft',0,1,datetime('now'),datetime('now'))`);
+    db.exec(`INSERT INTO "TreeGrade" ("id","name","displayOrder","active","createdAt","updatedAt")
+      VALUES ('grade-keep','Premium',0,1,datetime('now'),datetime('now'))`);
     db.exec(`INSERT INTO "AdminAccount" ("id","name","email","passwordHash","createdAt","updatedAt")
       VALUES ('admin-keep','Levi','levi@example.com','hash',datetime('now'),datetime('now'))`);
     db.exec(`INSERT INTO "CounterAccount" ("id","accountLabel","pinHash","pinKey","active","access","createdAt","updatedAt")
@@ -359,6 +410,26 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
       .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
       .get(COUNT_HAND_MIGRATION);
     assert.ok(countHandApplied);
+    const sizeRequire = check.prepare(`PRAGMA table_info("TreeSize")`).all().map((c: { name: string }) => c.name);
+    const gradeRequire = check.prepare(`PRAGMA table_info("TreeGrade")`).all().map((c: { name: string }) => c.name);
+    assert.ok(sizeRequire.includes("requireFarm"));
+    assert.ok(gradeRequire.includes("requireFarm"));
+    const keptSize = check.prepare(`SELECT name, requireFarm FROM "TreeSize" WHERE id = 'size-keep'`).get() as {
+      name: string;
+      requireFarm: number;
+    };
+    const keptGrade = check.prepare(`SELECT name, requireFarm FROM "TreeGrade" WHERE id = 'grade-keep'`).get() as {
+      name: string;
+      requireFarm: number;
+    };
+    assert.equal(keptSize.name, "6-7 ft");
+    assert.equal(keptSize.requireFarm, 1);
+    assert.equal(keptGrade.name, "Premium");
+    assert.equal(keptGrade.requireFarm, 1);
+    const requireFarmApplied = check
+      .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+      .get(REQUIRE_FARM_MIGRATION);
+    assert.ok(requireFarmApplied);
     check.close();
   } finally {
     rmSync(dest, { recursive: true, force: true });

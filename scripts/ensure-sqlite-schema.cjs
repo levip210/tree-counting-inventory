@@ -16,6 +16,7 @@ const SIZE_COLOR_MIGRATION = "20260915180000_size_color";
 const MISCOUNT_MIGRATION = "20260925170000_miscount";
 const CUSTOMERS_MIGRATION = "20261005180000_customers";
 const COUNT_HAND_MIGRATION = "20261008153000_count_hand";
+const REQUIRE_FARM_MIGRATION = "20261008170000_require_farm";
 
 const CUSTOMER_TABLE_SQL = `CREATE TABLE "Customer" (
     "id" TEXT NOT NULL PRIMARY KEY,
@@ -157,6 +158,29 @@ function ensureCountHand(db, migrationsDir) {
   return { ok: ready, added, recorded };
 }
 
+function ensureRequireFarm(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, REQUIRE_FARM_MIGRATION, "migration.sql");
+  const ddl = `BOOLEAN NOT NULL DEFAULT true`;
+  let added = false;
+  added =
+    addColumnIfMissing(db, "TreeSize", "requireFarm", `ALTER TABLE "TreeSize" ADD COLUMN "requireFarm" ${ddl}`) || added;
+  added =
+    addColumnIfMissing(db, "TreeGrade", "requireFarm", `ALTER TABLE "TreeGrade" ADD COLUMN "requireFarm" ${ddl}`) ||
+    added;
+
+  const sizeOk = !tableExists(db, "TreeSize") || columnNames(db, "TreeSize").includes("requireFarm");
+  const gradeOk = !tableExists(db, "TreeGrade") || columnNames(db, "TreeGrade").includes("requireFarm");
+  const ready = sizeOk && gradeOk;
+  const bothTables = tableExists(db, "TreeSize") && tableExists(db, "TreeGrade");
+  let recorded = false;
+  if (ready && bothTables) {
+    recorded = recordMigration(db, { name: REQUIRE_FARM_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added requireFarm without touching existing sizes or grades");
+    if (recorded) console.log("[start] recorded prisma migration", REQUIRE_FARM_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
 function ensureSqliteSchema(databaseUrl, options = {}) {
   const cwd = options.cwd || process.cwd();
   const migrationsDir = options.migrationsDir || path.join(cwd, "prisma", "migrations");
@@ -229,6 +253,21 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
         countHand,
       };
     }
+
+    const requireFarm = ensureRequireFarm(db, migrationsDir);
+    if (!requireFarm.ok) {
+      return {
+        ok: false,
+        reason: "require-farm-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+        requireFarm,
+      };
+    }
     return {
       ok: true,
       dbPath,
@@ -240,6 +279,8 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
       customersRecorded: customers.recorded,
       countHandAdded: countHand.added,
       countHandRecorded: countHand.recorded,
+      requireFarmAdded: requireFarm.added,
+      requireFarmRecorded: requireFarm.recorded,
     };
   } finally {
     db.close();
@@ -251,6 +292,7 @@ module.exports = {
   MISCOUNT_MIGRATION,
   CUSTOMERS_MIGRATION,
   COUNT_HAND_MIGRATION,
+  REQUIRE_FARM_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 };
