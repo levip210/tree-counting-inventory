@@ -14,6 +14,7 @@ const PUBLIC_PREFIXES = [
   "/api/auth/pin",
   "/api/auth/logout",
   "/api/export/public",
+  "/api/backup/export",
   "/api/health",
 ];
 

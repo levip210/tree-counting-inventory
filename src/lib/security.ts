@@ -1,5 +1,5 @@
 import bcrypt from "bcryptjs";
-import { createHmac, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { PIN_MAX, PIN_MIN } from "./constants";
 import { getAuthSecret } from "./secret";
 
@@ -57,6 +57,13 @@ export function safeEqual(a: string, b: string): boolean {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
   if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+/** Constant-time string compare that does not leak the length of either value. */
+export function tokenEquals(provided: string, expected: string): boolean {
+  const left = createHash("sha256").update(provided, "utf8").digest();
+  const right = createHash("sha256").update(expected, "utf8").digest();
   return timingSafeEqual(left, right);
 }
 

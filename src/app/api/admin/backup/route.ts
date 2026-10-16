@@ -1,7 +1,10 @@
 import { NextRequest } from "next/server";
-import { errorJson } from "@/lib/session";
+import { errorJson, json } from "@/lib/session";
 import { sessionFromRequest } from "@/lib/guards";
 import { backupTables } from "@/server/export";
+import { parseBackupDocument, restoreBackupDocument } from "@/server/backup-document";
+import { backupStatusLine, recordDownload } from "@/server/backup-status";
+import { confirmAdminPassword } from "@/server/password-gate";
 import { toCsv } from "@/lib/security";
 
 export const runtime = "nodejs";
@@ -9,9 +12,14 @@ export const runtime = "nodejs";
 export async function GET(req: NextRequest) {
   const session = await sessionFromRequest(req);
   if (!session || session.role !== "admin") return errorJson("Admin sign-in required.", 401);
-  const table = new URL(req.url).searchParams.get("table") || "counts";
+  const url = new URL(req.url);
+  if (url.searchParams.get("view") === "status") {
+    return json({ line: await backupStatusLine() });
+  }
+  const table = url.searchParams.get("table") || "counts";
   const data = await backupTables();
   if (table === "json") {
+    await recordDownload();
     return new Response(JSON.stringify(data, null, 2), {
       headers: {
         "Content-Type": "application/json",
@@ -29,4 +37,24 @@ export async function GET(req: NextRequest) {
       "Content-Disposition": `attachment; filename="ptf-${table}.csv"`,
     },
   });
+}
+
+export async function POST(req: NextRequest) {
+  const session = await sessionFromRequest(req);
+  if (!session || session.role !== "admin" || !session.adminId) return errorJson("Admin sign-in required.", 401);
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== "object") return errorJson("That file is not valid JSON.", 400);
+  if (body.confirmation !== "RESTORE") return errorJson("Type RESTORE to confirm.", 400);
+  if (!(await confirmAdminPassword(session.adminId, String(body.currentPassword || "")))) {
+    return errorJson("Password confirmation failed.", 403);
+  }
+  const parsed = parseBackupDocument(body.backup);
+  if (!parsed.ok) return errorJson(parsed.error, 400);
+  try {
+    await restoreBackupDocument(parsed.doc);
+  } catch (err) {
+    console.error("[backup] restore failed", err instanceof Error ? err.message : err);
+    return errorJson("Restore failed and no data was changed.", 500);
+  }
+  return json({ ok: true, message: "Backup restored. Admin and counter logins were kept." });
 }
