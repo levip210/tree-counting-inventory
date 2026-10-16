@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma";
 import { toCsv } from "../lib/security";
+import { buildBackupDocument } from "./backup-document";
 import { publicCount } from "./counts";
 
 const COUNT_COLUMNS = [
@@ -96,71 +97,5 @@ export async function exportInventoryJson() {
 }
 
 export async function backupTables() {
-  const [counts, farms, customers, sizes, grades, sessions, inventory, counters, admins, settings] = await Promise.all([
-    prisma.countRecord.findMany({ orderBy: { createdAt: "asc" } }),
-    prisma.farm.findMany({ orderBy: { displayOrder: "asc" } }),
-    prisma.customer.findMany({ orderBy: [{ displayOrder: "asc" }, { name: "asc" }] }),
-    prisma.treeSize.findMany({ orderBy: { displayOrder: "asc" } }),
-    prisma.treeGrade.findMany({ orderBy: { displayOrder: "asc" } }),
-    prisma.countSession.findMany({ orderBy: { startedAt: "asc" } }),
-    prisma.startingInventory.findMany(),
-    prisma.counterAccount.findMany({
-      select: {
-        id: true,
-        accountLabel: true,
-        active: true,
-        access: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    }),
-    prisma.adminAccount.findMany({
-      select: { id: true, name: true, email: true, createdAt: true, updatedAt: true },
-    }),
-    prisma.appSettings.findUnique({ where: { id: "default" } }),
-  ]);
-
-  return {
-    generatedAt: new Date().toISOString(),
-    note: "Backup excludes password hashes, PIN hashes, PIN keys, and Excel API key hashes.",
-    counts: counts.map((c) => ({
-      CountID: c.id,
-      Timestamp: c.timestampLocal,
-      TimestampUtc: c.timestampUtc.toISOString(),
-      Action: c.action,
-      FarmID: c.farmId,
-      FarmName: c.farmName,
-      CustomerID: c.customerId,
-      CustomerName: c.customerName,
-      SizeID: c.sizeId,
-      SizeName: c.sizeName,
-      GradeID: c.gradeId,
-      GradeName: c.gradeName,
-      Quantity: c.quantity,
-      SessionID: c.sessionId,
-      ClientSyncId: c.clientSyncId,
-      CreatedAt: c.createdAt.toISOString(),
-      SyncedAt: c.syncedAt?.toISOString() ?? "",
-      VoidedAt: c.voidedAt?.toISOString() ?? "",
-      VoidReason: c.voidReason ?? "",
-      CorrectionNote: c.correctionNote ?? "",
-    })),
-    farms,
-    customers,
-    sizes,
-    grades,
-    sessions,
-    startingInventory: inventory,
-    counterAccounts: counters,
-    adminAccounts: admins,
-    settings: settings
-      ? {
-          excelEnabled: settings.excelEnabled,
-          soundEnabled: settings.soundEnabled,
-          vibrationEnabled: settings.vibrationEnabled,
-          setupLocked: settings.setupLocked,
-          checklistDismissed: settings.checklistDismissed,
-        }
-      : null,
-  };
+  return buildBackupDocument();
 }

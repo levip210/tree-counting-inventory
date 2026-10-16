@@ -14,6 +14,7 @@ import {
   CUSTOMERS_MIGRATION,
   COUNT_HAND_MIGRATION,
   REQUIRE_FARM_MIGRATION,
+  BACKUP_STATUS_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 } from "../scripts/ensure-sqlite-schema.cjs";
@@ -130,6 +131,8 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
     INSERT INTO "Farm" VALUES ('farm-1', 'Home farm');
     INSERT INTO "AdminAccount" VALUES ('admin-1', 'Levi');
     INSERT INTO "CounterAccount" VALUES ('counter-1', 'Yard tablet');
+    CREATE TABLE "AppSettings" ("id" TEXT NOT NULL PRIMARY KEY);
+    INSERT INTO "AppSettings" VALUES ('default');
   `);
   db.close();
 
@@ -211,6 +214,15 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
     .get(REQUIRE_FARM_MIGRATION) as { migration_name: string };
   assert.equal(requireFarmMigration.migration_name, REQUIRE_FARM_MIGRATION);
   assert.equal(first.requireFarmAdded, true);
+  const settingsCols = again.prepare(`PRAGMA table_info("AppSettings")`).all().map((c: { name: string }) => c.name);
+  assert.ok(settingsCols.includes("lastBackupAt"));
+  assert.ok(settingsCols.includes("lastBackupOk"));
+  assert.ok(settingsCols.includes("lastBackupError"));
+  const backupMigration = again
+    .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+    .get(BACKUP_STATUS_MIGRATION) as { migration_name: string };
+  assert.equal(backupMigration.migration_name, BACKUP_STATUS_MIGRATION);
+  assert.equal(first.backupStatusAdded, true);
   again.close();
 
   const second = ensureSqliteSchema(`file:${dbPath}`);
@@ -220,6 +232,8 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
   assert.equal(second.miscountAdded, false);
   assert.equal(second.requireFarmAdded, false);
   assert.equal(second.requireFarmRecorded, false);
+  assert.equal(second.backupStatusAdded, false);
+  assert.equal(second.backupStatusRecorded, false);
 
   rmSync(dir, { recursive: true, force: true });
 });
@@ -253,6 +267,8 @@ test("prisma-migrate.cjs still adds TreeSize.color when the CLI cannot start", (
       CREATE TABLE "CounterAccount" ("id" TEXT NOT NULL PRIMARY KEY, "accountLabel" TEXT NOT NULL);
       INSERT INTO "AdminAccount" VALUES ('admin-keep', 'Levi');
       INSERT INTO "CounterAccount" VALUES ('counter-keep', 'Yard');
+      CREATE TABLE "AppSettings" ("id" TEXT NOT NULL PRIMARY KEY);
+      INSERT INTO "AppSettings" VALUES ('default');
     `);
     db.close();
 
@@ -306,6 +322,10 @@ test("prisma-migrate.cjs still adds TreeSize.color when the CLI cannot start", (
     };
     assert.equal(keptGrade.name, "Premium");
     assert.equal(keptGrade.requireFarm, 1);
+    const settingsCols = check.prepare(`PRAGMA table_info("AppSettings")`).all().map((c: { name: string }) => c.name);
+    assert.ok(settingsCols.includes("lastBackupAt"));
+    assert.ok(settingsCols.includes("lastBackupOk"));
+    assert.ok(settingsCols.includes("lastBackupError"));
     check.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -430,6 +450,14 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
       .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
       .get(REQUIRE_FARM_MIGRATION);
     assert.ok(requireFarmApplied);
+    const settingsCols = check.prepare(`PRAGMA table_info("AppSettings")`).all().map((c: { name: string }) => c.name);
+    assert.ok(settingsCols.includes("lastBackupAt"));
+    assert.ok(settingsCols.includes("lastBackupOk"));
+    assert.ok(settingsCols.includes("lastBackupError"));
+    const backupApplied = check
+      .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+      .get(BACKUP_STATUS_MIGRATION);
+    assert.ok(backupApplied);
     check.close();
   } finally {
     rmSync(dest, { recursive: true, force: true });

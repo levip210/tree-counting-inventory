@@ -17,6 +17,7 @@ const MISCOUNT_MIGRATION = "20260925170000_miscount";
 const CUSTOMERS_MIGRATION = "20261005180000_customers";
 const COUNT_HAND_MIGRATION = "20261008153000_count_hand";
 const REQUIRE_FARM_MIGRATION = "20261008170000_require_farm";
+const BACKUP_STATUS_MIGRATION = "20261016140000_backup_status";
 
 const CUSTOMER_TABLE_SQL = `CREATE TABLE "Customer" (
     "id" TEXT NOT NULL PRIMARY KEY,
@@ -181,6 +182,30 @@ function ensureRequireFarm(db, migrationsDir) {
   return { ok: ready, added, recorded };
 }
 
+function ensureBackupStatus(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, BACKUP_STATUS_MIGRATION, "migration.sql");
+  const columns = [
+    ["lastBackupAt", `ALTER TABLE "AppSettings" ADD COLUMN "lastBackupAt" DATETIME`],
+    ["lastBackupOk", `ALTER TABLE "AppSettings" ADD COLUMN "lastBackupOk" BOOLEAN`],
+    ["lastBackupError", `ALTER TABLE "AppSettings" ADD COLUMN "lastBackupError" TEXT`],
+  ];
+  let added = false;
+  if (tableExists(db, "AppSettings")) {
+    for (const [column, ddl] of columns) {
+      added = addColumnIfMissing(db, "AppSettings", column, ddl) || added;
+    }
+  }
+  const names = tableExists(db, "AppSettings") ? columnNames(db, "AppSettings") : [];
+  const ready = !tableExists(db, "AppSettings") || columns.every(([column]) => names.includes(column));
+  let recorded = false;
+  if (ready && tableExists(db, "AppSettings")) {
+    recorded = recordMigration(db, { name: BACKUP_STATUS_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added backup status columns without touching existing settings");
+    if (recorded) console.log("[start] recorded prisma migration", BACKUP_STATUS_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
 function ensureSqliteSchema(databaseUrl, options = {}) {
   const cwd = options.cwd || process.cwd();
   const migrationsDir = options.migrationsDir || path.join(cwd, "prisma", "migrations");
@@ -268,6 +293,22 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
         requireFarm,
       };
     }
+
+    const backupStatus = ensureBackupStatus(db, migrationsDir);
+    if (!backupStatus.ok) {
+      return {
+        ok: false,
+        reason: "backup-status-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+        requireFarm,
+        backupStatus,
+      };
+    }
     return {
       ok: true,
       dbPath,
@@ -281,6 +322,8 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
       countHandRecorded: countHand.recorded,
       requireFarmAdded: requireFarm.added,
       requireFarmRecorded: requireFarm.recorded,
+      backupStatusAdded: backupStatus.added,
+      backupStatusRecorded: backupStatus.recorded,
     };
   } finally {
     db.close();
@@ -293,6 +336,7 @@ module.exports = {
   CUSTOMERS_MIGRATION,
   COUNT_HAND_MIGRATION,
   REQUIRE_FARM_MIGRATION,
+  BACKUP_STATUS_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 };

@@ -695,6 +695,23 @@ table.data input[type="checkbox"] {
   max-width: min(92vw, 420px);
   text-align: center;
 }
+.backup-status {
+  font-weight: 750;
+  font-size: 1.05rem;
+  margin-top: 0;
+}
+.backup-restore {
+  margin-top: 22px;
+  display: grid;
+  gap: 4px;
+  max-width: 100%;
+}
+.backup-restore input[type="file"] {
+  min-height: 44px;
+  max-width: 100%;
+}
+.backup-restore .btn { justify-self: start; }
+
 .miscount-review {
   margin-top: 28px;
   padding-top: 8px;
