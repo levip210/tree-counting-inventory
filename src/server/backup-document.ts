@@ -318,6 +318,35 @@ export async function buildBackupDocument(now = new Date()): Promise<BackupDocum
   return doc;
 }
 
+export type OperationalExport = {
+  exportedAt: string;
+  farms: BackupFarm[];
+  customers: BackupCustomer[];
+  sizes: BackupSize[];
+  grades: BackupGrade[];
+  startingInventory: BackupInventory[];
+  sessions: BackupSession[];
+  counts: BackupCount[];
+  miscounts: BackupMiscount[];
+};
+
+export async function buildOperationalExport(now = new Date()): Promise<OperationalExport> {
+  const doc = await buildBackupDocument(now);
+  const payload: OperationalExport = {
+    exportedAt: now.toISOString(),
+    farms: doc.farms,
+    customers: doc.customers,
+    sizes: doc.sizes,
+    grades: doc.grades,
+    startingInventory: doc.startingInventory,
+    sessions: doc.sessions,
+    counts: doc.counts,
+    miscounts: doc.miscounts,
+  };
+  assertNoSecretFields(payload);
+  return payload;
+}
+
 type ParseResult = { ok: true; doc: BackupDocument } | { ok: false; error: string };
 
 function fail(error: string): ParseResult {

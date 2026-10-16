@@ -15,6 +15,7 @@ import {
   COUNT_HAND_MIGRATION,
   REQUIRE_FARM_MIGRATION,
   BACKUP_STATUS_MIGRATION,
+  BACKUP_DOWNLOAD_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 } from "../scripts/ensure-sqlite-schema.cjs";
@@ -218,11 +219,17 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
   assert.ok(settingsCols.includes("lastBackupAt"));
   assert.ok(settingsCols.includes("lastBackupOk"));
   assert.ok(settingsCols.includes("lastBackupError"));
+  assert.ok(settingsCols.includes("lastDownloadAt"));
   const backupMigration = again
     .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
     .get(BACKUP_STATUS_MIGRATION) as { migration_name: string };
   assert.equal(backupMigration.migration_name, BACKUP_STATUS_MIGRATION);
+  const downloadMigration = again
+    .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+    .get(BACKUP_DOWNLOAD_MIGRATION) as { migration_name: string };
+  assert.equal(downloadMigration.migration_name, BACKUP_DOWNLOAD_MIGRATION);
   assert.equal(first.backupStatusAdded, true);
+  assert.equal(first.backupDownloadAdded, true);
   again.close();
 
   const second = ensureSqliteSchema(`file:${dbPath}`);
@@ -234,6 +241,8 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
   assert.equal(second.requireFarmRecorded, false);
   assert.equal(second.backupStatusAdded, false);
   assert.equal(second.backupStatusRecorded, false);
+  assert.equal(second.backupDownloadAdded, false);
+  assert.equal(second.backupDownloadRecorded, false);
 
   rmSync(dir, { recursive: true, force: true });
 });
@@ -326,6 +335,7 @@ test("prisma-migrate.cjs still adds TreeSize.color when the CLI cannot start", (
     assert.ok(settingsCols.includes("lastBackupAt"));
     assert.ok(settingsCols.includes("lastBackupOk"));
     assert.ok(settingsCols.includes("lastBackupError"));
+    assert.ok(settingsCols.includes("lastDownloadAt"));
     check.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -454,10 +464,15 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
     assert.ok(settingsCols.includes("lastBackupAt"));
     assert.ok(settingsCols.includes("lastBackupOk"));
     assert.ok(settingsCols.includes("lastBackupError"));
+    assert.ok(settingsCols.includes("lastDownloadAt"));
     const backupApplied = check
       .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
       .get(BACKUP_STATUS_MIGRATION);
     assert.ok(backupApplied);
+    const downloadApplied = check
+      .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+      .get(BACKUP_DOWNLOAD_MIGRATION);
+    assert.ok(downloadApplied);
     check.close();
   } finally {
     rmSync(dest, { recursive: true, force: true });

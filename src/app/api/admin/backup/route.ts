@@ -3,7 +3,7 @@ import { errorJson, json } from "@/lib/session";
 import { sessionFromRequest } from "@/lib/guards";
 import { backupTables } from "@/server/export";
 import { parseBackupDocument, restoreBackupDocument } from "@/server/backup-document";
-import { backupStatusLine } from "@/server/backup-status";
+import { backupStatusLine, recordDownload } from "@/server/backup-status";
 import { confirmAdminPassword } from "@/server/password-gate";
 import { toCsv } from "@/lib/security";
 
@@ -19,6 +19,7 @@ export async function GET(req: NextRequest) {
   const table = url.searchParams.get("table") || "counts";
   const data = await backupTables();
   if (table === "json") {
+    await recordDownload();
     return new Response(JSON.stringify(data, null, 2), {
       headers: {
         "Content-Type": "application/json",

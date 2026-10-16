@@ -18,6 +18,7 @@ const CUSTOMERS_MIGRATION = "20261005180000_customers";
 const COUNT_HAND_MIGRATION = "20261008153000_count_hand";
 const REQUIRE_FARM_MIGRATION = "20261008170000_require_farm";
 const BACKUP_STATUS_MIGRATION = "20261016140000_backup_status";
+const BACKUP_DOWNLOAD_MIGRATION = "20261016153000_backup_download";
 
 const CUSTOMER_TABLE_SQL = `CREATE TABLE "Customer" (
     "id" TEXT NOT NULL PRIMARY KEY,
@@ -206,6 +207,28 @@ function ensureBackupStatus(db, migrationsDir) {
   return { ok: ready, added, recorded };
 }
 
+function ensureBackupDownload(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, BACKUP_DOWNLOAD_MIGRATION, "migration.sql");
+  let added = false;
+  if (tableExists(db, "AppSettings")) {
+    added = addColumnIfMissing(
+      db,
+      "AppSettings",
+      "lastDownloadAt",
+      `ALTER TABLE "AppSettings" ADD COLUMN "lastDownloadAt" DATETIME`,
+    );
+  }
+  const names = tableExists(db, "AppSettings") ? columnNames(db, "AppSettings") : [];
+  const ready = !tableExists(db, "AppSettings") || names.includes("lastDownloadAt");
+  let recorded = false;
+  if (ready && tableExists(db, "AppSettings")) {
+    recorded = recordMigration(db, { name: BACKUP_DOWNLOAD_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added last download column without touching existing settings");
+    if (recorded) console.log("[start] recorded prisma migration", BACKUP_DOWNLOAD_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
 function ensureSqliteSchema(databaseUrl, options = {}) {
   const cwd = options.cwd || process.cwd();
   const migrationsDir = options.migrationsDir || path.join(cwd, "prisma", "migrations");
@@ -309,6 +332,23 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
         backupStatus,
       };
     }
+
+    const backupDownload = ensureBackupDownload(db, migrationsDir);
+    if (!backupDownload.ok) {
+      return {
+        ok: false,
+        reason: "backup-download-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+        requireFarm,
+        backupStatus,
+        backupDownload,
+      };
+    }
     return {
       ok: true,
       dbPath,
@@ -324,6 +364,8 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
       requireFarmRecorded: requireFarm.recorded,
       backupStatusAdded: backupStatus.added,
       backupStatusRecorded: backupStatus.recorded,
+      backupDownloadAdded: backupDownload.added,
+      backupDownloadRecorded: backupDownload.recorded,
     };
   } finally {
     db.close();
@@ -337,6 +379,7 @@ module.exports = {
   COUNT_HAND_MIGRATION,
   REQUIRE_FARM_MIGRATION,
   BACKUP_STATUS_MIGRATION,
+  BACKUP_DOWNLOAD_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 };

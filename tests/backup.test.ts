@@ -1,16 +1,16 @@
 import { PrismaClient } from "@prisma/client";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
+import { createContext, runInContext } from "node:vm";
 import test from "node:test";
 import assert from "node:assert/strict";
 
 process.env.AUTH_SECRET = "test-secret-value-at-least-16";
 process.env.PIN_PEPPER = "pepper";
 process.env.APP_TIMEZONE = "America/New_York";
-delete process.env.GOOGLE_SHEET_ID;
-delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+delete process.env.BACKUP_TOKEN;
 
 const dir = mkdtempSync(join(tmpdir(), "ptf-backup-"));
 const dbPath = join(dir, "test.db");
@@ -29,40 +29,72 @@ const PIN_KEY_MARKER = "secret-pin-key-marker";
 const EXCEL_MARKER = "secret-excel-hash-marker";
 
 type Doc = import("../src/server/backup-document").BackupDocument;
-type SheetsClient = import("../src/server/sheets-backup").SheetsClient;
 
 let buildBackupDocument: typeof import("../src/server/backup-document").buildBackupDocument;
+let buildOperationalExport: typeof import("../src/server/backup-document").buildOperationalExport;
 let parseBackupDocument: typeof import("../src/server/backup-document").parseBackupDocument;
 let restoreBackupDocument: typeof import("../src/server/backup-document").restoreBackupDocument;
 let formatBackupStatus: typeof import("../src/server/backup-status").formatBackupStatus;
 let backupStatusLine: typeof import("../src/server/backup-status").backupStatusLine;
-let readSheetsConfig: typeof import("../src/server/sheets-backup").readSheetsConfig;
-let runSheetsBackup: typeof import("../src/server/sheets-backup").runSheetsBackup;
-let sheetTables: typeof import("../src/server/sheets-backup").sheetTables;
-let SHEET_TABS: typeof import("../src/server/sheets-backup").SHEET_TABS;
 let createFirstAdmin: typeof import("../src/server/setup").createFirstAdmin;
 let confirmAdminPassword: typeof import("../src/server/password-gate").confirmAdminPassword;
 
 let saved: Doc;
 let originalAdminId = "";
 
-function memorySheets(existing: string[] = []): SheetsClient & { ensured: string[]; sheets: Map<string, string[][]> } {
-  const sheets = new Map<string, string[][]>(existing.map((title) => [title, []]));
-  const ensured: string[] = [];
+type SheetRow = { values: string[][]; clears: number };
+type ScriptGlobal = Record<string, unknown> & {
+  tablesFromExport: (payload: unknown) => { title: string; rows: string[][] }[];
+  pullBackup: () => void;
+  saveBackupConfig_: (url: string, token: string) => void;
+  installBackupTrigger: () => void;
+};
+
+function mockSpreadsheet(seed: Record<string, string[][]> = {}) {
+  const sheets = new Map<string, SheetRow>();
+  for (const [name, values] of Object.entries(seed)) sheets.set(name, { values: values.map((row) => [...row]), clears: 0 });
+  function wrap(name: string) {
+    const row = sheets.get(name)!;
+    return {
+      clearContents() {
+        row.clears += 1;
+        row.values = [];
+      },
+      getRange() {
+        return {
+          setValues(values: string[][]) {
+            row.values = values.map((line) => [...line]);
+          },
+        };
+      },
+    };
+  }
   return {
     sheets,
-    ensured,
-    async listTitles() {
-      return [...sheets.keys()];
+    getSheetByName(name: string) {
+      return sheets.has(name) ? wrap(name) : null;
     },
-    async ensureSheet(title: string) {
-      ensured.push(title);
-      if (!sheets.has(title)) sheets.set(title, []);
-    },
-    async overwrite(title: string, rows: string[][]) {
-      sheets.set(title, rows);
+    insertSheet(name: string) {
+      sheets.set(name, { values: [], clears: 0 });
+      return wrap(name);
     },
   };
+}
+
+function loadAppsScript(extra: Record<string, unknown> = {}): ScriptGlobal {
+  const sandbox = {
+    SpreadsheetApp: {},
+    PropertiesService: {},
+    UrlFetchApp: {},
+    ScriptApp: {},
+    Utilities: { formatDate: () => "Oct 16, 2026, 9:53 AM EDT" },
+    ...extra,
+  };
+  createContext(sandbox);
+  runInContext(readFileSync(join(process.cwd(), "docs/backup-apps-script.gs"), "utf8"), sandbox, {
+    filename: "docs/backup-apps-script.gs",
+  });
+  return sandbox as ScriptGlobal;
 }
 
 async function snapshot() {
@@ -82,38 +114,27 @@ async function snapshot() {
 }
 
 test("load backup modules", async () => {
-  ({ buildBackupDocument, parseBackupDocument, restoreBackupDocument } = await import("../src/server/backup-document"));
+  ({ buildBackupDocument, buildOperationalExport, parseBackupDocument, restoreBackupDocument } = await import(
+    "../src/server/backup-document"
+  ));
   ({ formatBackupStatus, backupStatusLine } = await import("../src/server/backup-status"));
-  ({ readSheetsConfig, runSheetsBackup, sheetTables, SHEET_TABS } = await import("../src/server/sheets-backup"));
   ({ createFirstAdmin } = await import("../src/server/setup"));
   ({ confirmAdminPassword } = await import("../src/server/password-gate"));
-  assert.equal(SHEET_TABS.length, 8);
+  assert.equal(typeof buildOperationalExport, "function");
 });
 
-test("backup status uses New York time", () => {
+test("backup status uses New York time for export and download", () => {
   const at = new Date("2026-10-16T13:53:00.000Z");
-  assert.equal(formatBackupStatus(null), "Last backup: never");
-  assert.match(formatBackupStatus({ lastBackupAt: at, lastBackupOk: true, lastBackupError: null }), /Last backup: Oct 16, 2026, 9:53 AM .* — OK/);
+  const later = new Date("2026-10-16T14:05:00.000Z");
+  assert.equal(formatBackupStatus(null), "Last export: never\nLast download: never");
   assert.match(
-    formatBackupStatus({ lastBackupAt: at, lastBackupOk: false, lastBackupError: "sheet missing" }),
-    /Last backup: Oct 16, 2026, 9:53 AM .* — failed \(sheet missing\)/,
+    formatBackupStatus({ lastBackupAt: at, lastBackupOk: true, lastBackupError: null, lastDownloadAt: later }),
+    /Last export: Oct 16, 2026, 9:53 AM .* — OK\nLast download: Oct 16, 2026, 10:05 AM .* — OK/,
   );
-});
-
-test("sheets config skips when unset or invalid", () => {
-  assert.equal(readSheetsConfig({}).ok, false);
-  assert.match(readSheetsConfig({}).ok ? "" : readSheetsConfig({}).error, /not set/);
-  const missingSheet = readSheetsConfig({ GOOGLE_SERVICE_ACCOUNT_JSON: "{\"client_email\":\"a@b.c\",\"private_key\":\"x\"}" });
-  assert.equal(missingSheet.ok, false);
-  const badJson = readSheetsConfig({ GOOGLE_SHEET_ID: "sheet", GOOGLE_SERVICE_ACCOUNT_JSON: "not-json" });
-  assert.equal(badJson.ok, false);
-  if (!badJson.ok) assert.match(badJson.error, /not valid JSON/);
-  const missingKey = readSheetsConfig({
-    GOOGLE_SHEET_ID: "sheet",
-    GOOGLE_SERVICE_ACCOUNT_JSON: JSON.stringify({ client_email: "a@b.c" }),
-  });
-  assert.equal(missingKey.ok, false);
-  if (!missingKey.ok) assert.match(missingKey.error, /private_key/);
+  assert.match(
+    formatBackupStatus({ lastBackupAt: at, lastBackupOk: false, lastBackupError: "HTTP 401" }),
+    /Last export: Oct 16, 2026, 9:53 AM .* — failed \(HTTP 401\)\nLast download: never/,
+  );
 });
 
 test("seed operational data and export without secrets", async () => {
@@ -241,69 +262,6 @@ test("seed operational data and export without secrets", async () => {
   assert.equal("pinHash" in (saved.counterAccounts[0] || {}), false);
   assert.equal(saved.settings?.excelEnabled, true);
   assert.equal("excelApiKeyHash" in (saved.settings || {}), false);
-});
-
-test("sheets job writes tabs and status, and records a skip when unset", async () => {
-  const client = memorySheets(["Farms"]);
-  const ok = await runSheetsBackup({ client, now: new Date("2026-10-16T13:53:00.000Z") });
-  assert.equal(ok.ok, true);
-  assert.deepEqual([...client.sheets.keys()].sort(), [...SHEET_TABS].sort());
-  assert.equal(client.ensured.includes("Farms"), false);
-  assert.equal(client.ensured.includes("Miscounts"), true);
-  const sizes = client.sheets.get("Sizes") || [];
-  assert.deepEqual(sizes[0], ["SizeID", "Name", "Color", "RequireFarm", "DisplayOrder", "Active", "CreatedAt", "UpdatedAt"]);
-  const requireCol = sizes[0]!.indexOf("RequireFarm");
-  const boughs = sizes.slice(1).find((row) => row[1] === "Boughs");
-  assert.equal(boughs?.[requireCol], "false");
-  const dumped = JSON.stringify([...client.sheets.values()]);
-  assert.equal(dumped.includes(PIN_MARKER), false);
-  assert.equal(dumped.includes(EXCEL_MARKER), false);
-  assert.doesNotMatch(dumped, /passwordHash|pinHash|pinKey|excelApiKeyHash|private_key/);
-  assert.equal(client.sheets.has("Admins" as "Farms"), false);
-  const line = await backupStatusLine();
-  assert.match(line, /Last backup: Oct 16, 2026, 9:53 AM .* — OK/);
-
-  delete process.env.GOOGLE_SHEET_ID;
-  delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  const skipped = await runSheetsBackup({ now: new Date("2026-10-16T14:00:00.000Z") });
-  assert.equal(skipped.ok, false);
-  assert.match(skipped.error || "", /GOOGLE_SHEET_ID and GOOGLE_SERVICE_ACCOUNT_JSON are not set/);
-  const failed = await backupStatusLine();
-  assert.match(failed, /— failed \(GOOGLE_SHEET_ID and GOOGLE_SERVICE_ACCOUNT_JSON are not set\)/);
-
-  process.env.GOOGLE_SHEET_ID = "sheet-id";
-  process.env.GOOGLE_SERVICE_ACCOUNT_JSON = "not-json";
-  const invalid = await runSheetsBackup({ now: new Date("2026-10-16T14:05:00.000Z") });
-  assert.equal(invalid.ok, false);
-  assert.match(invalid.error || "", /not valid JSON/);
-  assert.match(await backupStatusLine(), /— failed \(GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON\)/);
-  delete process.env.GOOGLE_SHEET_ID;
-  delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-});
-
-test("overlapping sheets runs are skipped", async () => {
-  let release: () => void = () => {};
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let started = 0;
-  const client: SheetsClient = {
-    async listTitles() {
-      return [];
-    },
-    async ensureSheet() {},
-    async overwrite() {
-      started += 1;
-      await gate;
-    },
-  };
-  const first = runSheetsBackup({ client });
-  const second = await runSheetsBackup({ client });
-  assert.equal(second.skipped, true);
-  release();
-  const finished = await first;
-  assert.equal(finished.ok, true);
-  assert.equal(started, SHEET_TABS.length);
 });
 
 test("wipe to a fresh admin and restore the same rows", async () => {
@@ -451,10 +409,6 @@ test("restore route is admin only and rejects a bad confirmation", async () => {
   assert.equal(corrupt.status, 400);
   assert.deepEqual(await snapshot(), before);
 
-  const status = await GET(
-    new NextRequest("http://localhost/api/admin/backup?view=status", { headers: { cookie: `ptf_session=${adminToken}` } }),
-  );
-  assert.equal(status.status, 200);
   const download = await GET(
     new NextRequest("http://localhost/api/admin/backup?table=json", { headers: { cookie: `ptf_session=${adminToken}` } }),
   );
@@ -465,11 +419,176 @@ test("restore route is admin only and rejects a bad confirmation", async () => {
   const downloaded = JSON.stringify(body);
   assert.equal(downloaded.includes(PIN_MARKER), false);
   assert.doesNotMatch(downloaded, /passwordHash|pinHash|excelApiKeyHash/);
+  const status = await GET(
+    new NextRequest("http://localhost/api/admin/backup?view=status", { headers: { cookie: `ptf_session=${adminToken}` } }),
+  );
+  assert.equal(status.status, 200);
+  const line = ((await status.json()) as { line: string }).line;
+  assert.match(line, /Last export: never/);
+  assert.match(line, /Last download: Oct 16, 2026, .* — OK/);
 
   const counterStatus = await GET(
     new NextRequest("http://localhost/api/admin/backup?view=status", { headers: { cookie: `ptf_session=${counterToken}` } }),
   );
   assert.equal(counterStatus.status, 401);
+});
+
+test("export endpoint rejects a missing or wrong token and returns operational JSON", async () => {
+  const { NextRequest } = await import("next/server");
+  const { GET } = await import("../src/app/api/backup/export/route");
+  delete process.env.BACKUP_TOKEN;
+  const disabled = await GET(new NextRequest("http://localhost/api/backup/export?token=anything"));
+  assert.equal(disabled.status, 503);
+
+  process.env.BACKUP_TOKEN = "correct-backup-token";
+  const missing = await GET(new NextRequest("http://localhost/api/backup/export"));
+  assert.equal(missing.status, 401);
+  const wrongQuery = await GET(new NextRequest("http://localhost/api/backup/export?token=nope"));
+  assert.equal(wrongQuery.status, 401);
+  const wrongBearer = await GET(
+    new NextRequest("http://localhost/api/backup/export", { headers: { authorization: "Bearer nope" } }),
+  );
+  assert.equal(wrongBearer.status, 401);
+  assert.match(await backupStatusLine(), /Last export: never/);
+
+  const byQuery = await GET(new NextRequest("http://localhost/api/backup/export?token=correct-backup-token"));
+  assert.equal(byQuery.status, 200);
+  const queryBody = (await byQuery.json()) as Record<string, unknown>;
+  assert.equal(typeof queryBody.exportedAt, "string");
+  assert.ok(!Number.isNaN(Date.parse(String(queryBody.exportedAt))));
+  assert.equal(Array.isArray(queryBody.farms), true);
+  assert.equal(Array.isArray(queryBody.miscounts), true);
+  assert.equal("adminAccounts" in queryBody, false);
+  assert.equal("counterAccounts" in queryBody, false);
+  assert.equal("settings" in queryBody, false);
+  const raw = JSON.stringify(queryBody);
+  assert.equal(raw.includes(PIN_MARKER), false);
+  assert.equal(raw.includes(PIN_KEY_MARKER), false);
+  assert.equal(raw.includes(EXCEL_MARKER), false);
+  assert.equal(raw.includes("levi@powerstreefarm.com"), false);
+  assert.doesNotMatch(raw, /passwordHash|pinHash|pinKey|excelApiKeyHash|countHand/);
+  const sizes = queryBody.sizes as { name: string; requireFarm: boolean }[];
+  assert.equal(sizes.find((row) => row.name === "Boughs")?.requireFarm, false);
+  assert.match(await backupStatusLine(), /Last export: Oct 16, 2026, .* — OK/);
+  assert.match(await backupStatusLine(), /Last download: Oct 16, 2026, .* — OK/);
+
+  const byBearer = await GET(
+    new NextRequest("http://localhost/api/backup/export", {
+      headers: { authorization: "Bearer correct-backup-token" },
+    }),
+  );
+  assert.equal(byBearer.status, 200);
+  delete process.env.BACKUP_TOKEN;
+});
+
+test("apps script parser writes tabs from a real export and leaves them on a fetch error", async () => {
+  const source = readFileSync(join(process.cwd(), "docs/backup-apps-script.gs"), "utf8");
+  assert.match(source, /Script Properties/);
+  assert.match(source, /everyMinutes\(15\)/);
+  assert.match(source, /America\/New_York/);
+  assert.match(source, /UrlFetchApp/);
+  assert.match(source, /setupBackup/);
+
+  const exported = await buildOperationalExport(new Date("2026-10-16T13:53:00.000Z"));
+  const script = loadAppsScript();
+  const tables = script.tablesFromExport(exported);
+  assert.equal(
+    JSON.stringify(tables.map((table) => table.title)),
+    JSON.stringify(["Farms", "Customers", "Sizes", "Grades", "Starting inventory", "Sessions", "Counts", "Miscounts"]),
+  );
+  const sizes = tables.find((table) => table.title === "Sizes")!;
+  assert.equal(
+    JSON.stringify(sizes.rows[0]),
+    JSON.stringify(["SizeID", "Name", "Color", "RequireFarm", "DisplayOrder", "Active", "CreatedAt", "UpdatedAt"]),
+  );
+  const requireCol = sizes.rows[0].indexOf("RequireFarm");
+  const boughs = sizes.rows.slice(1).find((row) => row[1] === "Boughs");
+  assert.equal(boughs?.[requireCol], "false");
+  const dumped = JSON.stringify(tables);
+  assert.equal(dumped.includes(PIN_MARKER), false);
+  assert.equal(dumped.includes(EXCEL_MARKER), false);
+  assert.doesNotMatch(dumped, /passwordHash|pinHash|pinKey|excelApiKeyHash/);
+  assert.throws(() => script.tablesFromExport({ farms: [] }), /Backup payload was not valid/);
+
+  const properties: Record<string, string> = {};
+  const triggerCalls: unknown[] = [];
+  const spreadsheet = mockSpreadsheet({ Farms: [["keep-me"]] });
+  const shared = {
+    SpreadsheetApp: {
+      getActiveSpreadsheet: () => spreadsheet,
+      getUi: () => ({}),
+    },
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: (key: string) => properties[key] || "",
+        setProperties: (next: Record<string, string>) => Object.assign(properties, next),
+      }),
+    },
+    Utilities: { formatDate: () => "Oct 16, 2026, 9:53 AM EDT" },
+    ScriptApp: {
+      getProjectTriggers: () => [{ getHandlerFunction: () => "pullBackup" }],
+      deleteTrigger: (trigger: unknown) => triggerCalls.push(["delete", trigger]),
+      newTrigger: (name: string) => ({
+        timeBased: () => ({
+          everyMinutes: (minutes: number) => ({
+            create: () => triggerCalls.push(["create", name, minutes]),
+          }),
+        }),
+      }),
+    },
+  };
+
+  const failing = loadAppsScript({
+    ...shared,
+    UrlFetchApp: {
+      fetch: () => {
+        throw new Error("network down");
+      },
+    },
+  });
+  failing.saveBackupConfig_("  https://example.test/api/backup/export  ", "  token-value  ");
+  assert.equal(properties.BACKUP_URL, "https://example.test/api/backup/export");
+  assert.equal(properties.BACKUP_TOKEN, "token-value");
+  failing.installBackupTrigger();
+  assert.equal(JSON.stringify(triggerCalls[1]), JSON.stringify(["create", "pullBackup", 15]));
+  failing.pullBackup();
+  assert.equal(spreadsheet.sheets.get("Farms")?.clears, 0);
+  assert.equal(JSON.stringify(spreadsheet.sheets.get("Farms")?.values), JSON.stringify([["keep-me"]]));
+  const failedStatus = spreadsheet.sheets.get("Status")?.values || [];
+  assert.equal(failedStatus[0]?.[0], "Last backup");
+  assert.match(failedStatus[0]?.[1] || "", /Oct 16, 2026, 9:53 AM EDT — failed \(network down\)/);
+
+  const succeeding = loadAppsScript({
+    ...shared,
+    UrlFetchApp: {
+      fetch: (_url: string, options: { headers: { Authorization: string } }) => {
+        assert.equal(options.headers.Authorization, "Bearer token-value");
+        return {
+          getResponseCode: () => 200,
+          getContentText: () => JSON.stringify(exported),
+        };
+      },
+    },
+  });
+  succeeding.pullBackup();
+  assert.equal(spreadsheet.sheets.get("Farms")?.clears, 1);
+  assert.equal(spreadsheet.sheets.get("Farms")?.values[1]?.[1], exported.farms[0]?.name);
+  assert.equal(spreadsheet.sheets.get("Miscounts")?.values.length, exported.miscounts.length + 1);
+  assert.match(spreadsheet.sheets.get("Status")?.values[0]?.[1] || "", /— OK/);
+
+  const httpError = loadAppsScript({
+    ...shared,
+    UrlFetchApp: {
+      fetch: () => ({
+        getResponseCode: () => 401,
+        getContentText: () => "{\"error\":\"Unauthorized.\"}",
+      }),
+    },
+  });
+  const beforeHttp = JSON.stringify(spreadsheet.sheets.get("Farms")?.values);
+  httpError.pullBackup();
+  assert.equal(JSON.stringify(spreadsheet.sheets.get("Farms")?.values), beforeHttp);
+  assert.match(spreadsheet.sheets.get("Status")?.values[0]?.[1] || "", /failed \(HTTP 401\)/);
 });
 
 test("cleanup backup database", async () => {

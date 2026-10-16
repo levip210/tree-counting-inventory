@@ -146,10 +146,12 @@ model AppSettings {
   vibrationEnabled   Boolean   @default(true)
   checklistJson      String    @default("{}")
   checklistDismissed Boolean   @default(false)
-  /// Last Google Sheets backup attempt. Null until the scheduler has run once.
+  /// Last successful or failed pull of GET /api/backup/export.
   lastBackupAt       DateTime?
   lastBackupOk       Boolean?
   lastBackupError    String?
+  /// Last admin JSON download from the backups page.
+  lastDownloadAt     DateTime?
   updatedAt          DateTime  @updatedAt
 }
 

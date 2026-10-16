@@ -5,7 +5,7 @@ import { AdminShell, PasswordField } from "@/components/AdminShell";
 import { api } from "@/lib/client";
 
 export default function BackupsPage() {
-  const [status, setStatus] = useState("Last backup: …");
+  const [status, setStatus] = useState("Last export: …\nLast download: …");
   const [fileName, setFileName] = useState("");
   const [backup, setBackup] = useState<unknown>(null);
   const [phrase, setPhrase] = useState("");
@@ -68,7 +68,7 @@ export default function BackupsPage() {
     <AdminShell title="Backups">
       <p className="backup-status" data-backup-status={status}>{status}</p>
       <p>
-        Sheets backup runs every 15 minutes inside this server. Until GOOGLE_SHEET_ID and GOOGLE_SERVICE_ACCOUNT_JSON are set, this line stays failed and the rest of the app keeps working.
+        Last export is the last time the backup URL was pulled. Last download is the last time an admin downloaded the JSON from this page. Times are America/New_York. The Google Sheet pulls that URL with BACKUP_TOKEN. See docs/backup-apps-script.gs.
       </p>
       <p>Downloads never include password hashes, PIN hashes, PIN keys, or API key hashes.</p>
       {message ? <div className="alert ok">{message}</div> : null}
