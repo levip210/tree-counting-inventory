@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { AdminRefresh } from "@/components/AdminRefresh";
 import { AdminShell } from "@/components/AdminShell";
 import { CHECKLIST_STEPS, INVENTORY_DISCLAIMER } from "@/lib/constants";
 import { api } from "@/lib/client";
@@ -28,12 +29,24 @@ type Dash = {
 export default function DashboardClient() {
   const welcome = useSearchParams().get("welcome") === "1";
   const [data, setData] = useState<Dash | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [loadError, setLoadError] = useState("");
 
   async function load() {
-    setData(await api<Dash>("/api/admin/dashboard"));
+    setRefreshing(true);
+    setLoadError("");
+    try {
+      setData(await api<Dash>("/api/admin/dashboard"));
+      setUpdatedAt(new Date());
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Could not refresh.");
+    } finally {
+      setRefreshing(false);
+    }
   }
   useEffect(() => {
-    load().catch(() => undefined);
+    void load();
   }, []);
 
   async function toggleStep(id: string) {
@@ -51,6 +64,8 @@ export default function DashboardClient() {
 
   return (
     <AdminShell title="Admin dashboard">
+      <AdminRefresh busy={refreshing} updatedAt={updatedAt} onRefresh={() => void load()} />
+      {loadError ? <div className="alert info">{loadError}</div> : null}
       {welcome ? (
         <div className="alert ok">Administrator created. First-time setup is now locked. You can explore immediately — the checklist is a guide, not a gate.</div>
       ) : null}
@@ -108,6 +123,10 @@ export default function DashboardClient() {
 
       <section style={{ marginTop: 18 }}>
         <h3>Not yet received from farm</h3>
+        <p>
+          A grade that draws from another grade adds to that grade&apos;s received count for the same farm and size.
+          The count itself stays on the grade that was tapped. Size and grade totals above stay separate.
+        </p>
         <div className="table-wrap">
           <table className="data">
             <thead><tr><th>Farm</th><th>Size</th><th>Grade</th><th>Starting</th><th>Received</th><th>Not yet</th><th>Status</th></tr></thead>

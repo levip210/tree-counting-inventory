@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { useRouter } from "next/navigation";
 import { ACTIONS, DOUBLE_TAP_MS } from "@/lib/constants";
 import { countGridColumns, normalizeCountHand, type CountHand } from "@/lib/count-hand";
+import { applyPileDelta, yardGuardForGrade } from "@/lib/grade-draw";
 import { yardCellNeedsFarmList } from "@/lib/require-farm";
 import { api, exactLocalTimestamp, newId } from "@/lib/client";
 import { allPending, cacheCatalog, pendingCount, queueCount, readCachedCatalog, removePending, type PendingCount } from "@/lib/offline";
@@ -18,6 +19,8 @@ type Cat = {
   active: boolean;
   color?: string | null;
   requireFarm?: boolean;
+  drawsFromGradeId?: string | null;
+  inventoryRequireFarm?: boolean;
 };
 type Farm = Cat;
 type Progress = {
@@ -145,10 +148,23 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     return `${sizeId}|${gradeId}`;
   }
 
-  function farmCarries(farmId: string, sizeId: string, gradeId: string) {
+  function farmCarries(farmId: string, sizeId: string, grade: Cat) {
+    const pileId = yardGuardForGrade(grade).inventoryGradeId;
     return (catalog?.startingProgress || []).some(
-      (row) => row.farmId === farmId && row.sizeId === sizeId && row.gradeId === gradeId,
+      (row) => row.farmId === farmId && row.sizeId === sizeId && row.gradeId === pileId,
     );
+  }
+
+  function adjustPile(sizeId: string, grade: Cat, delta: number) {
+    if (mode !== "yard" || !farm) return;
+    const pileId = yardGuardForGrade(grade).inventoryGradeId;
+    const farmId = farm.id;
+    setCatalog((current) => {
+      if (!current) return current;
+      const startingProgress = applyPileDelta(current.startingProgress, farmId, sizeId, pileId, delta);
+      if (startingProgress === current.startingProgress) return current;
+      return { ...current, startingProgress };
+    });
   }
 
   function startSession(nextFarm: Farm | null, nextCustomer: Farm | null = null) {
@@ -227,6 +243,16 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     setTotals((t) => ({ ...t, [meta.key]: (t[meta.key] || 0) + 1 }));
     setSessionTotal((n) => n + 1);
     setLast({ size: meta.size, grade: meta.grade, color: meta.color });
+    pileAdjustFromKey(meta.key, 1);
+  }
+
+  function pileAdjustFromKey(key: string, delta: number) {
+    const split = key.indexOf("|");
+    if (split <= 0) return;
+    const sizeId = key.slice(0, split);
+    const gradeId = key.slice(split + 1);
+    const grade = grades.find((row) => row.id === gradeId);
+    if (grade) adjustPile(sizeId, grade, delta);
   }
 
   function revertLiveTap(id: string) {
@@ -236,6 +262,7 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     undoStack.current = undoStack.current.filter((saved) => saved !== id);
     setTotals((t) => ({ ...t, [meta.key]: Math.max(0, (t[meta.key] || 0) - 1) }));
     setSessionTotal((n) => Math.max(0, n - 1));
+    pileAdjustFromKey(meta.key, -1);
   }
 
   function reconcileAccepted(accepted: { clientSyncId: string; miscount?: boolean }[]) {
@@ -353,11 +380,12 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
     };
 
     const meta: TapMeta = { key, size: size.name, grade: grade.name, color: size.color || null };
+    const guard = yardGuardForGrade(grade);
     const onFarmList =
       mode !== "yard" ||
       !farm ||
-      !yardCellNeedsFarmList(size.requireFarm, grade.requireFarm) ||
-      farmCarries(farm.id, size.id, grade.id);
+      !yardCellNeedsFarmList(size.requireFarm, guard.requireFarm) ||
+      farmCarries(farm.id, size.id, grade);
 
     try {
       await queueCount(count);
@@ -384,8 +412,10 @@ export function CountingApp({ mode }: { mode: "yard" | "shipping" }) {
   async function undo() {
     const id = undoStack.current.pop();
     if (!id) return;
+    const meta = appliedRef.current.get(id);
     appliedRef.current.delete(id);
     heldRef.current.delete(id);
+    if (meta) pileAdjustFromKey(meta.key, -1);
     const pendingRows = await allPending();
     const local = pendingRows.find((p) => p.clientSyncId === id);
     if (local) {

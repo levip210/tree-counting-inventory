@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { AdminRefresh } from "@/components/AdminRefresh";
 import { AdminShell } from "@/components/AdminShell";
 import { SizeNameChip } from "@/components/SizeColor";
 import { api } from "@/lib/client";
@@ -17,15 +18,23 @@ export default function InventoryPage() {
   const [progress, setProgress] = useState<Progress[]>([]);
   const [farmId, setFarmId] = useState("");
   const [msg, setMsg] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
   async function load() {
-    const data = await api<{ farms: Cat[]; sizes: Cat[]; grades: Cat[]; rows: Row[]; progress: Progress[] }>("/api/admin/inventory");
-    setFarms(data.farms);
-    setSizes(data.sizes);
-    setGrades(data.grades);
-    setRows(data.rows);
-    setProgress(data.progress);
-    if (!farmId && data.farms[0]) setFarmId(data.farms[0].id);
+    setRefreshing(true);
+    try {
+      const data = await api<{ farms: Cat[]; sizes: Cat[]; grades: Cat[]; rows: Row[]; progress: Progress[] }>("/api/admin/inventory");
+      setFarms(data.farms);
+      setSizes(data.sizes);
+      setGrades(data.grades);
+      setRows(data.rows);
+      setProgress(data.progress);
+      setFarmId((current) => current || data.farms[0]?.id || "");
+      setUpdatedAt(new Date());
+    } finally {
+      setRefreshing(false);
+    }
   }
   useEffect(() => {
     load().catch((e) => setMsg(e.message));
@@ -49,9 +58,10 @@ export default function InventoryPage() {
 
   return (
     <AdminShell title="Starting farm inventory">
+      <AdminRefresh busy={refreshing} updatedAt={updatedAt} onRefresh={() => void load().catch((e) => setMsg(e.message))} />
       <p>
         Optional expected trees by farm, size, and grade. The dashboard shows <b>Not yet received from farm</b> and warns when received exceeds the starting number.
-        Leave a cell blank if you are not tracking that combination.
+        Leave a cell blank if you are not tracking that combination. A grade set to draw from another grade adds its yard counts to that grade&apos;s received number here. It does not need its own row.
       </p>
       {msg ? <div className="alert ok">{msg}</div> : null}
       <label className="field">

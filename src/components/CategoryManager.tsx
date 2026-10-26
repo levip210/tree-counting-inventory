@@ -12,10 +12,19 @@ type Item = {
   countTotal: number;
   color?: string | null;
   requireFarm?: boolean;
+  drawsFromGradeId?: string | null;
 };
 
 function farmRequired(item: Item) {
   return item.requireFarm !== false;
+}
+
+function pileChoices(item: Item, items: Item[]) {
+  return items.filter((other) => {
+    if (other.id === item.id) return false;
+    if (other.id === item.drawsFromGradeId) return true;
+    return !other.drawsFromGradeId;
+  });
 }
 
 export function CategoryManager({ kind, title, suggested }: { kind: "size" | "grade"; title: string; suggested: string[] }) {
@@ -84,6 +93,11 @@ export function CategoryManager({ kind, title, suggested }: { kind: "size" | "gr
       <p style={{ color: "#5c5648" }}>
         Require farm to have this stays On unless you turn it Off. Yard Receiving blocks a size and grade together only when both are On and that pair is missing from the farm&apos;s starting inventory. Turning either one Off lets the pair be counted anyway. Shipping is not affected.
       </p>
+      {kind === "grade" ? (
+        <p style={{ color: "#5c5648" }}>
+          Inventory pile: leave this on “This grade&apos;s own inventory” for a normal column. Choose another grade when taps of this column should use that grade&apos;s starting inventory for the same size. The tap is still saved as this grade, so the two columns stay separate. The farm must carry the other grade, and that grade&apos;s Require farm setting is what the yard check uses — even if this grade&apos;s own setting is Off. This grade does not need its own starting-inventory row.
+        </p>
+      ) : null}
       {msg ? <div className="alert info">{msg}</div> : null}
       <div className="row">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder={`New ${title.toLowerCase()}`} />
@@ -122,6 +136,23 @@ export function CategoryManager({ kind, title, suggested }: { kind: "size" | "gr
                   >
                     Require farm to have this: {farmRequired(item) ? "On" : "Off"}
                   </button>
+                  {kind === "grade" ? (
+                    <label className="draws-from">
+                      Inventory pile
+                      <select
+                        aria-label={`Inventory pile for ${item.name}`}
+                        value={item.drawsFromGradeId || ""}
+                        onChange={(e) => void patch({ id: item.id, drawsFromGradeId: e.target.value || null })}
+                      >
+                        <option value="">This grade&apos;s own inventory</option>
+                        {pileChoices(item, items).map((other) => (
+                          <option key={other.id} value={other.id}>
+                            {other.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                 </td>
                 {showColor ? (
                   <td>

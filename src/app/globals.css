@@ -563,6 +563,45 @@ a { color: inherit; }
   min-height: 52px;
 }
 
+.admin-refresh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  background: #fff4d2;
+  border: 2px solid var(--gold);
+  border-radius: 14px;
+}
+.admin-refresh .btn {
+  min-width: 148px;
+  font-size: 1.05rem;
+}
+.admin-refresh-time {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.draws-from {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 0.92rem;
+  font-weight: 650;
+}
+.draws-from select {
+  min-height: 44px;
+  max-width: 100%;
+  border-radius: 12px;
+  border: 2px solid #d7ccb4;
+  background: white;
+  color: var(--ink);
+  padding: 6px 8px;
+  font-weight: 650;
+}
+
 .admin-nav {
   display: flex;
   flex-wrap: wrap;

@@ -1,5 +1,7 @@
+import { resolveInventoryGrade } from "../lib/grade-draw";
 import { prisma } from "../lib/prisma";
 import type { SessionPayload } from "../lib/session";
+import { loadGradeDraws } from "./grade-draw";
 
 export type MiscountView = {
   id: string;
@@ -40,10 +42,21 @@ export function counterFromSession(session: SessionPayload): {
   };
 }
 
-/** A farm carries a size/grade when that combo exists on starting inventory (same list as farm history). */
+/**
+ * A farm carries a size/grade when that combo exists on starting inventory.
+ * A grade that draws from another grade is carried when the farm has the
+ * other grade's row for the same size.
+ */
 export async function farmCarriesSizeGrade(farmId: string, sizeId: string, gradeId: string): Promise<boolean> {
+  let pileGradeId = gradeId;
+  try {
+    const grades = await loadGradeDraws();
+    pileGradeId = resolveInventoryGrade(gradeId, grades).inventoryGradeId;
+  } catch {
+    pileGradeId = gradeId;
+  }
   const row = await prisma.startingInventory.findUnique({
-    where: { farmId_sizeId_gradeId: { farmId, sizeId, gradeId } },
+    where: { farmId_sizeId_gradeId: { farmId, sizeId, gradeId: pileGradeId } },
     select: { id: true },
   });
   return row != null;

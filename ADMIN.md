@@ -77,7 +77,11 @@ If a size was used in counts, delete becomes a **soft deactivate**.
 
 **Admin → Grades**
 
-Suggested: Premium, #1, #2. Same pattern as sizes.
+Suggested: Premium, #1, #2. Same pattern as sizes, plus an **Inventory pile** on each grade.
+
+Leave the pile on **This grade's own inventory** for a normal column. Choose another grade when taps of this column should use that grade's starting inventory for the same size. The tap is still saved under this grade's name, so the columns stay separate on the grid and in count history. The farm must carry the other grade for that size. This grade does not need its own starting-inventory row.
+
+Example: **Scale free** can draw from **#1**. A Scale free tap is checked against that farm's #1 row and reduces the #1 remaining count. It is still stored as Scale free. **Require farm to have this** can stay Off on Scale free; the #1 row is what matters. Do not rename the grade unless you mean to change the label crews see.
 
 ## 8. Arrange display order (automatic counting grid)
 
@@ -155,6 +159,8 @@ On the counting screen, **Undo last** voids the most recent tap from **this brow
 
 **Admin → Count history**
 
+**Refresh** reloads the visible counts and miscount review without logging out. The line next to it shows the last successful update in Eastern Time. The list you already see stays on screen while it loads.
+
 Filter by action, date, size/grade/farm text, and voided rows.
 
 Select one or more rows (checkboxes, or **Select all** for the visible list) and tap **Delete selected**. You get **one** confirmation — **Delete N counts?** **Cancel** leaves them alone. A reason is not required.
@@ -170,6 +176,8 @@ This count table never shows who counted.
 ## 16. Read the dashboard
 
 **Admin → Dashboard**
+
+**Refresh** at the top reloads received, shipped, and not-yet-received numbers without logging out. It shows **Refreshing…** while the request is in flight and the Eastern Time it last succeeded.
 
 - All-time received and shipped
 - **Inventory = Received − Shipped** by size/grade
@@ -188,6 +196,9 @@ Enter expected trees per farm × size × grade.
 - A saved cell (including 0) means that farm **carries** that size and grade. Leave a cell blank if the farm does not carry it.
 - Yard Receiving checks every tap against this list. A match counts as usual. A combo with no cell is **not** added to the live count; it is saved for **Miscount review**.
 - If received exceeds starting, the dashboard and Yard Receiving show an **exceed** warning. Taps of a listed combo still save.
+- A grade that draws from another grade (Admin → Grades → Inventory pile) adds its yard counts to that other grade's received / not-yet-received numbers. It does not need a cell of its own. **Refresh** reloads those numbers.
+
+**Admin → Customers** also has **Refresh** for shipped totals by customer, size, and grade. Shipping totals stay on the grade that was tapped. They do not draw down a farm's starting inventory.
 
 ## 18. Secure Excel / CSV / JSON export
 

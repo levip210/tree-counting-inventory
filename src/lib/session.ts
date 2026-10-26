@@ -34,7 +34,9 @@ export function clearSessionCookie(res: NextResponse): NextResponse {
 }
 
 export function json(data: unknown, status = 200): NextResponse {
-  return NextResponse.json(data, { status });
+  const res = NextResponse.json(data, { status });
+  res.headers.set("Cache-Control", "no-store");
+  return res;
 }
 
 export function errorJson(message: string, status = 400): NextResponse {

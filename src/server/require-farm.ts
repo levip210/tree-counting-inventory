@@ -1,13 +1,16 @@
+import { resolveInventoryGrade } from "../lib/grade-draw";
 import { requireFarmOn, yardCellNeedsFarmList } from "../lib/require-farm";
 import { prisma } from "../lib/prisma";
+import { loadGradeDraws } from "./grade-draw";
 
 export async function yardCellNeedsFarmRecord(sizeId: string, gradeId: string): Promise<boolean> {
   try {
-    const [size, grade] = await Promise.all([
+    const [size, grades] = await Promise.all([
       prisma.treeSize.findUnique({ where: { id: sizeId }, select: { requireFarm: true } }),
-      prisma.treeGrade.findUnique({ where: { id: gradeId }, select: { requireFarm: true } }),
+      loadGradeDraws(),
     ]);
-    return yardCellNeedsFarmList(size?.requireFarm, grade?.requireFarm);
+    const resolved = resolveInventoryGrade(gradeId, grades);
+    return yardCellNeedsFarmList(size?.requireFarm, resolved.requireFarm);
   } catch {
     return true;
   }
