@@ -4,6 +4,7 @@ import { requireAccess, sessionFromRequest } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
 import { farmProgress } from "@/server/dashboard";
 import { getCountHand } from "@/server/count-hand";
+import { annotateGrades } from "@/server/grade-draw";
 import { attachRequireFarm } from "@/server/require-farm";
 
 export const runtime = "nodejs";
@@ -30,10 +31,11 @@ export async function GET(req: NextRequest) {
     prisma.appSettings.findUnique({ where: { id: "default" } }),
     farmProgress(),
   ]);
-  const [sizes, grades] = await Promise.all([
+  const [sizes, gradeFlags] = await Promise.all([
     attachRequireFarm("size", sizeRows),
     attachRequireFarm("grade", gradeRows),
   ]);
+  const grades = await annotateGrades(gradeFlags);
   const countHand = await getCountHand(session);
   return json({
     farms,

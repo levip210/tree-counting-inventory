@@ -22,6 +22,8 @@ export type BackupSize = BackupFarm & {
 
 export type BackupGrade = BackupFarm & {
   requireFarm: boolean;
+  /** Null when this grade uses its own starting inventory. Omitted on older backups. */
+  drawsFromGradeId: string | null;
 };
 
 export type BackupInventory = {
@@ -220,6 +222,7 @@ export async function buildBackupDocument(now = new Date()): Promise<BackupDocum
       id: row.id,
       name: row.name,
       requireFarm: row.requireFarm,
+      drawsFromGradeId: row.drawsFromGradeId,
       displayOrder: row.displayOrder,
       active: row.active,
       createdAt: row.createdAt.toISOString(),
@@ -391,6 +394,15 @@ function reqDate(row: Record<string, unknown>, key: string, label: string): stri
   return new Date(value).toISOString();
 }
 
+function optDrawId(row: Record<string, unknown>, label: string): string | null | ParseResult {
+  if (!("drawsFromGradeId" in row) || row.drawsFromGradeId == null || row.drawsFromGradeId === "") return null;
+  if (typeof row.drawsFromGradeId !== "string") return fail(`${label} has an invalid drawsFromGradeId.`);
+  const value = row.drawsFromGradeId.trim();
+  if (!value) return null;
+  if (value.length > 200) return fail(`${label} has a drawsFromGradeId that is too long.`);
+  return value;
+}
+
 function optDate(row: Record<string, unknown>, key: string, label: string): string | null | ParseResult {
   const value = row[key];
   if (value == null || value === "") return null;
@@ -524,6 +536,8 @@ export function parseBackupDocument(input: unknown): ParseResult {
     if (isFail(name)) return name;
     const requireFarm = reqBool(row, "requireFarm", label);
     if (isFail(requireFarm)) return requireFarm;
+    const drawsFromGradeId = optDrawId(row, label);
+    if (isFail(drawsFromGradeId)) return drawsFromGradeId;
     const displayOrder = reqInt(row, "displayOrder", label);
     if (isFail(displayOrder)) return displayOrder;
     const active = reqBool(row, "active", label);
@@ -532,10 +546,18 @@ export function parseBackupDocument(input: unknown): ParseResult {
     if (isFail(createdAt)) return createdAt;
     const updatedAt = reqDate(row, "updatedAt", label);
     if (isFail(updatedAt)) return updatedAt;
-    grades.push({ id, name, requireFarm, displayOrder, active, createdAt, updatedAt });
+    grades.push({ id, name, requireFarm, drawsFromGradeId, displayOrder, active, createdAt, updatedAt });
   }
   const gradeDup = uniqueIds(grades.map((row) => row.id), "grade");
   if (gradeDup) return gradeDup;
+  const gradeIdsForDraw = new Set(grades.map((row) => row.id));
+  for (const grade of grades) {
+    if (!grade.drawsFromGradeId) continue;
+    if (grade.drawsFromGradeId === grade.id) return fail(`Grade ${grade.name} cannot draw from itself.`);
+    if (!gradeIdsForDraw.has(grade.drawsFromGradeId)) {
+      return fail(`Grade ${grade.name} draws from a grade that is not in this file.`);
+    }
+  }
 
   const farmIds = new Set(farms.map((row) => row.id));
   const sizeIds = new Set(sizes.map((row) => row.id));
@@ -880,6 +902,7 @@ export async function restoreBackupDocument(doc: BackupDocument): Promise<void> 
             id: row.id,
             name: row.name,
             requireFarm: row.requireFarm,
+            drawsFromGradeId: row.drawsFromGradeId,
             displayOrder: row.displayOrder,
             active: row.active,
             createdAt: new Date(row.createdAt),

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { AdminRefresh } from "@/components/AdminRefresh";
 import { AdminShell } from "@/components/AdminShell";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { api } from "@/lib/client";
@@ -29,13 +30,25 @@ export default function CustomersPage() {
   const [name, setName] = useState("");
   const [msg, setMsg] = useState("");
   const [rename, setRename] = useState<{ id: string; name: string } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [refreshError, setRefreshError] = useState("");
 
   async function load(query = q) {
-    const data = await api<{ customers: Customer[]; unassignedTrees: number }>(
-      `/api/admin/customers?q=${encodeURIComponent(query)}`,
-    );
-    setCustomers(data.customers);
-    setUnassigned(data.unassignedTrees || 0);
+    setRefreshing(true);
+    setRefreshError("");
+    try {
+      const data = await api<{ customers: Customer[]; unassignedTrees: number }>(
+        `/api/admin/customers?q=${encodeURIComponent(query)}`,
+      );
+      setCustomers(data.customers);
+      setUnassigned(data.unassignedTrees || 0);
+      setUpdatedAt(new Date());
+    } catch (e) {
+      setRefreshError(e instanceof Error ? e.message : "Could not refresh.");
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   useEffect(() => {
@@ -82,10 +95,13 @@ export default function CustomersPage() {
 
   return (
     <AdminShell title="Customers">
+      <AdminRefresh busy={refreshing} updatedAt={updatedAt} onRefresh={() => void load()} />
       <p>
         Shipping counters pick a customer from this list before they can count. Totals are trees shipped to each
-        customer, split by size and grade. Voided counts are left out.
+        customer, split by size and grade. Voided counts are left out. Refresh loads the latest shipped totals
+        without logging out.
       </p>
+      {refreshError ? <div className="alert info">{refreshError}</div> : null}
       {unassigned > 0 ? (
         <div className="alert info">
           {unassigned} shipped {unassigned === 1 ? "tree was" : "trees were"} counted before a customer was required.

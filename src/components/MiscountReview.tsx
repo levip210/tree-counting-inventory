@@ -13,7 +13,7 @@ type Miscount = {
   timestampLocal: string;
 };
 
-export function MiscountReview() {
+export function MiscountReview({ reloadToken = 0 }: { reloadToken?: number }) {
   const [rows, setRows] = useState<Miscount[]>([]);
   const [msg, setMsg] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -26,7 +26,7 @@ export function MiscountReview() {
 
   useEffect(() => {
     load().catch((e) => setMsg(e instanceof Error ? e.message : "Could not load miscounts."));
-  }, []);
+  }, [reloadToken]);
 
   async function confirmDelete() {
     if (!pendingId || busy) return;

@@ -16,6 +16,7 @@ import {
   REQUIRE_FARM_MIGRATION,
   BACKUP_STATUS_MIGRATION,
   BACKUP_DOWNLOAD_MIGRATION,
+  GRADE_DRAW_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 } from "../scripts/ensure-sqlite-schema.cjs";
@@ -230,6 +231,20 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
   assert.equal(downloadMigration.migration_name, BACKUP_DOWNLOAD_MIGRATION);
   assert.equal(first.backupStatusAdded, true);
   assert.equal(first.backupDownloadAdded, true);
+  const gradeDrawCols = again.prepare(`PRAGMA table_info("TreeGrade")`).all().map((c: { name: string }) => c.name);
+  assert.ok(gradeDrawCols.includes("drawsFromGradeId"));
+  const premium = again.prepare(`SELECT name, drawsFromGradeId FROM "TreeGrade"`).get() as {
+    name: string;
+    drawsFromGradeId: string | null;
+  };
+  assert.equal(premium.name, "Premium");
+  assert.equal(premium.drawsFromGradeId, null);
+  assert.equal(first.gradeDrawAdded, true);
+  assert.equal(first.gradeDrawLinked, 0);
+  const gradeDrawMigration = again
+    .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+    .get(GRADE_DRAW_MIGRATION) as { migration_name: string };
+  assert.equal(gradeDrawMigration.migration_name, GRADE_DRAW_MIGRATION);
   again.close();
 
   const second = ensureSqliteSchema(`file:${dbPath}`);
@@ -243,6 +258,9 @@ test("schema ensure adds TreeSize.color without wiping farm rows", () => {
   assert.equal(second.backupStatusRecorded, false);
   assert.equal(second.backupDownloadAdded, false);
   assert.equal(second.backupDownloadRecorded, false);
+  assert.equal(second.gradeDrawAdded, false);
+  assert.equal(second.gradeDrawRecorded, false);
+  assert.equal(second.gradeDrawLinked, 0);
 
   rmSync(dir, { recursive: true, force: true });
 });
@@ -336,6 +354,14 @@ test("prisma-migrate.cjs still adds TreeSize.color when the CLI cannot start", (
     assert.ok(settingsCols.includes("lastBackupOk"));
     assert.ok(settingsCols.includes("lastBackupError"));
     assert.ok(settingsCols.includes("lastDownloadAt"));
+    const gradeDrawCols = check.prepare(`PRAGMA table_info("TreeGrade")`).all().map((c: { name: string }) => c.name);
+    assert.ok(gradeDrawCols.includes("drawsFromGradeId"));
+    const keptDraw = check.prepare(`SELECT name, drawsFromGradeId FROM "TreeGrade"`).get() as {
+      name: string;
+      drawsFromGradeId: string | null;
+    };
+    assert.equal(keptDraw.name, "Premium");
+    assert.equal(keptDraw.drawsFromGradeId, null);
     check.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -473,8 +499,209 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
       .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
       .get(BACKUP_DOWNLOAD_MIGRATION);
     assert.ok(downloadApplied);
+    const gradeDrawCols = check.prepare(`PRAGMA table_info("TreeGrade")`).all().map((c: { name: string }) => c.name);
+    assert.ok(gradeDrawCols.includes("drawsFromGradeId"));
+    const keptDraw = check.prepare(`SELECT name, drawsFromGradeId FROM "TreeGrade" WHERE id = 'grade-keep'`).get() as {
+      name: string;
+      drawsFromGradeId: string | null;
+    };
+    assert.equal(keptDraw.name, "Premium");
+    assert.equal(keptDraw.drawsFromGradeId, null);
+    const gradeDrawApplied = check
+      .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+      .get(GRADE_DRAW_MIGRATION);
+    assert.ok(gradeDrawApplied);
     check.close();
   } finally {
     rmSync(dest, { recursive: true, force: true });
   }
+});
+
+test("grade draw migration links Scale free to #1 once and does not rename", () => {
+  const sql = readFileSync(join(process.cwd(), "prisma/migrations", GRADE_DRAW_MIGRATION, "migration.sql"), "utf8");
+  assert.match(sql, /ADD COLUMN "drawsFromGradeId"/);
+  assert.match(sql, /name" = 'Scale free'/);
+  assert.match(sql, /name" = '#1'/);
+  assert.doesNotMatch(sql, /SET "name"/i);
+  assert.doesNotMatch(sql, /CountRecord|StartingInventory|Miscount/);
+
+  const dir = mkdtempSync(join(tmpdir(), "ptf-draw-"));
+  const dbPath = join(dir, "app.db");
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE "TreeSize" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "displayOrder" INTEGER NOT NULL DEFAULT 0,
+      "active" BOOLEAN NOT NULL DEFAULT true,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL
+    );
+    CREATE TABLE "TreeGrade" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "displayOrder" INTEGER NOT NULL DEFAULT 0,
+      "active" BOOLEAN NOT NULL DEFAULT true,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL,
+      "drawsFromGradeId" TEXT
+    );
+    CREATE TABLE "Farm" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL);
+    CREATE TABLE "StartingInventory" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "farmId" TEXT NOT NULL,
+      "sizeId" TEXT NOT NULL,
+      "gradeId" TEXT NOT NULL,
+      "quantity" INTEGER NOT NULL
+    );
+    CREATE TABLE "CountRecord" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "gradeId" TEXT NOT NULL,
+      "gradeName" TEXT NOT NULL,
+      "quantity" INTEGER NOT NULL
+    );
+    INSERT INTO "TreeSize" VALUES ('size-1', '6-7 ft', 0, 1, datetime('now'), datetime('now'));
+    INSERT INTO "TreeGrade" ("id", "name", "displayOrder", "active", "createdAt", "updatedAt", "drawsFromGradeId")
+      VALUES ('prem', 'Premium', 0, 1, datetime('now'), datetime('now'), NULL);
+    INSERT INTO "TreeGrade" ("id", "name", "displayOrder", "active", "createdAt", "updatedAt", "drawsFromGradeId")
+      VALUES ('one', '#1', 1, 1, datetime('now'), datetime('now'), NULL);
+    INSERT INTO "TreeGrade" ("id", "name", "displayOrder", "active", "createdAt", "updatedAt", "drawsFromGradeId")
+      VALUES ('scale', 'Scale free', 2, 1, datetime('now'), datetime('now'), 'prem');
+    INSERT INTO "Farm" VALUES ('farm-1', 'Home farm');
+    INSERT INTO "StartingInventory" VALUES ('inv-1', 'farm-1', 'size-1', 'one', 40);
+    INSERT INTO "CountRecord" VALUES ('count-1', 'scale', 'Scale free', 1);
+    CREATE TABLE "AppSettings" ("id" TEXT NOT NULL PRIMARY KEY);
+    INSERT INTO "AppSettings" VALUES ('default');
+  `);
+  db.close();
+
+  const first = ensureSqliteSchema(`file:${dbPath}`);
+  assert.equal(first.ok, true);
+  assert.equal(first.gradeDrawLinked, 0);
+  const check = new DatabaseSync(dbPath);
+  const linked = check.prepare(`SELECT name, drawsFromGradeId FROM "TreeGrade" WHERE id = 'scale'`).get() as {
+    name: string;
+    drawsFromGradeId: string;
+  };
+  const one = check.prepare(`SELECT name, drawsFromGradeId FROM "TreeGrade" WHERE id = 'one'`).get() as {
+    name: string;
+    drawsFromGradeId: string | null;
+  };
+  const count = check.prepare(`SELECT gradeId, gradeName, quantity FROM "CountRecord"`).get() as {
+    gradeId: string;
+    gradeName: string;
+    quantity: number;
+  };
+  const inventory = check.prepare(`SELECT gradeId, quantity FROM "StartingInventory"`).get() as {
+    gradeId: string;
+    quantity: number;
+  };
+  assert.equal(linked.name, "Scale free");
+  assert.equal(linked.drawsFromGradeId, "prem");
+  assert.equal(one.name, "#1");
+  assert.equal(one.drawsFromGradeId, null);
+  assert.equal(count.gradeId, "scale");
+  assert.equal(count.gradeName, "Scale free");
+  assert.equal(count.quantity, 1);
+  assert.equal(inventory.gradeId, "one");
+  assert.equal(inventory.quantity, 40);
+  check.prepare(`UPDATE "TreeGrade" SET "drawsFromGradeId" = NULL WHERE id = 'scale'`).run();
+  check.close();
+
+  const second = ensureSqliteSchema(`file:${dbPath}`);
+  assert.equal(second.ok, true);
+  assert.equal(second.gradeDrawLinked, 0);
+  const afterClear = new DatabaseSync(dbPath);
+  const cleared = afterClear.prepare(`SELECT name, drawsFromGradeId FROM "TreeGrade" WHERE id = 'scale'`).get() as {
+    name: string;
+    drawsFromGradeId: string | null;
+  };
+  assert.equal(cleared.name, "Scale free");
+  assert.equal(cleared.drawsFromGradeId, null);
+  afterClear.close();
+
+  const ambiguous = mkdtempSync(join(tmpdir(), "ptf-draw-ambiguous-"));
+  const ambiguousPath = join(ambiguous, "app.db");
+  const ambiguousDb = new DatabaseSync(ambiguousPath);
+  ambiguousDb.exec(`
+    CREATE TABLE "TreeSize" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "displayOrder" INTEGER NOT NULL DEFAULT 0,
+      "active" BOOLEAN NOT NULL DEFAULT true,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL
+    );
+    CREATE TABLE "TreeGrade" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "displayOrder" INTEGER NOT NULL DEFAULT 0,
+      "active" BOOLEAN NOT NULL DEFAULT true,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL
+    );
+    INSERT INTO "TreeSize" VALUES ('size-1', '6-7 ft', 0, 1, datetime('now'), datetime('now'));
+    INSERT INTO "TreeGrade" VALUES ('one-a', '#1', 0, 1, datetime('now'), datetime('now'));
+    INSERT INTO "TreeGrade" VALUES ('one-b', '#1', 1, 1, datetime('now'), datetime('now'));
+    INSERT INTO "TreeGrade" VALUES ('scale', 'Scale free', 2, 1, datetime('now'), datetime('now'));
+    CREATE TABLE "AppSettings" ("id" TEXT NOT NULL PRIMARY KEY);
+    INSERT INTO "AppSettings" VALUES ('default');
+  `);
+  ambiguousDb.close();
+  const ambiguousEnsure = ensureSqliteSchema(`file:${ambiguousPath}`);
+  assert.equal(ambiguousEnsure.ok, true);
+  assert.equal(ambiguousEnsure.gradeDrawLinked, 0);
+  const ambiguousCheck = new DatabaseSync(ambiguousPath);
+  const scale = ambiguousCheck.prepare(`SELECT name, drawsFromGradeId FROM "TreeGrade" WHERE id = 'scale'`).get() as {
+    name: string;
+    drawsFromGradeId: string | null;
+  };
+  assert.equal(scale.name, "Scale free");
+  assert.equal(scale.drawsFromGradeId, null);
+  ambiguousCheck.close();
+
+  const exact = mkdtempSync(join(tmpdir(), "ptf-draw-exact-"));
+  const exactPath = join(exact, "app.db");
+  const exactDb = new DatabaseSync(exactPath);
+  exactDb.exec(`
+    CREATE TABLE "TreeSize" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "displayOrder" INTEGER NOT NULL DEFAULT 0,
+      "active" BOOLEAN NOT NULL DEFAULT true,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL
+    );
+    CREATE TABLE "TreeGrade" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "displayOrder" INTEGER NOT NULL DEFAULT 0,
+      "active" BOOLEAN NOT NULL DEFAULT true,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL
+    );
+    INSERT INTO "TreeSize" VALUES ('size-1', '6-7 ft', 0, 1, datetime('now'), datetime('now'));
+    INSERT INTO "TreeGrade" VALUES ('one', '#1', 0, 1, datetime('now'), datetime('now'));
+    INSERT INTO "TreeGrade" VALUES ('scale', 'Scale free', 1, 1, datetime('now'), datetime('now'));
+    CREATE TABLE "AppSettings" ("id" TEXT NOT NULL PRIMARY KEY);
+    INSERT INTO "AppSettings" VALUES ('default');
+  `);
+  exactDb.close();
+  const exactEnsure = ensureSqliteSchema(`file:${exactPath}`);
+  assert.equal(exactEnsure.ok, true);
+  assert.equal(exactEnsure.gradeDrawLinked, 1);
+  const exactCheck = new DatabaseSync(exactPath);
+  const exactScale = exactCheck.prepare(`SELECT name, drawsFromGradeId FROM "TreeGrade" WHERE id = 'scale'`).get() as {
+    name: string;
+    drawsFromGradeId: string | null;
+  };
+  const exactOne = exactCheck.prepare(`SELECT name FROM "TreeGrade" WHERE id = 'one'`).get() as { name: string };
+  assert.equal(exactScale.name, "Scale free");
+  assert.equal(exactOne.name, "#1");
+  assert.equal(exactScale.drawsFromGradeId, "one");
+  exactCheck.close();
+
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(ambiguous, { recursive: true, force: true });
+  rmSync(exact, { recursive: true, force: true });
 });

@@ -1096,6 +1096,302 @@ test("require farm defaults on and either off skips the yard inventory check", a
   }
 });
 
+test("a grade that draws from #1 uses that pile and keeps its own name", async () => {
+  const { resolveInventoryGrade, yardGuardForGrade, applyPileDelta, validateDrawTarget } = await import(
+    "../src/lib/grade-draw"
+  );
+  const { farmProgress, dashboardStats } = await import("../src/server/dashboard");
+  const { GET: catalogGet } = await import("../src/app/api/catalog/route");
+  const { PATCH } = await import("../src/app/api/admin/categories/route");
+  const { NextRequest } = await import("next/server");
+  const { signSession } = await import("../src/lib/session-edge");
+
+  const drawGrades = [
+    { id: "one", requireFarm: true, drawsFromGradeId: null },
+    { id: "scale", requireFarm: false, drawsFromGradeId: "one" },
+    { id: "prem", requireFarm: true, drawsFromGradeId: null },
+  ];
+  assert.equal(resolveInventoryGrade("scale", drawGrades).inventoryGradeId, "one");
+  assert.equal(resolveInventoryGrade("scale", drawGrades).requireFarm, true);
+  assert.equal(resolveInventoryGrade("prem", drawGrades).inventoryGradeId, "prem");
+  assert.equal(resolveInventoryGrade("gone", drawGrades).inventoryGradeId, "gone");
+  const chained = [
+    { id: "c", requireFarm: true, drawsFromGradeId: null },
+    { id: "b", requireFarm: false, drawsFromGradeId: "c" },
+    { id: "a", requireFarm: false, drawsFromGradeId: "b" },
+  ];
+  assert.equal(resolveInventoryGrade("a", chained).inventoryGradeId, "b");
+  assert.equal(
+    yardGuardForGrade({ id: "scale", requireFarm: false, drawsFromGradeId: "one", inventoryRequireFarm: true }).requireFarm,
+    true,
+  );
+  assert.equal(yardGuardForGrade({ id: "scale", requireFarm: false }).inventoryGradeId, "scale");
+  assert.equal(validateDrawTarget("scale", "scale", drawGrades).ok, false);
+  assert.equal(validateDrawTarget("one", "prem", [{ id: "one", drawsFromGradeId: null }, { id: "scale", drawsFromGradeId: "one" }, { id: "prem", drawsFromGradeId: null }]).ok, false);
+
+  const progressRows = [
+    {
+      farmId: "f",
+      sizeId: "s",
+      gradeId: "one",
+      starting: 2,
+      received: 2,
+      notYetReceived: 0,
+      exceeded: false,
+    },
+  ];
+  const bumped = applyPileDelta(progressRows, "f", "s", "one", 1);
+  assert.equal(bumped[0]?.received, 3);
+  assert.equal(bumped[0]?.notYetReceived, 0);
+  assert.equal(bumped[0]?.exceeded, true);
+  assert.equal(applyPileDelta(progressRows, "f", "s", "scale", 1), progressRows);
+
+  const size = await prisma.treeSize.create({
+    data: { name: "Draw size", displayOrder: 80, active: true, requireFarm: true, updatedAt: new Date() },
+  });
+  const numberOne = await prisma.treeGrade.findFirstOrThrow({ where: { name: "#1" } });
+  const scale = await prisma.treeGrade.create({
+    data: { name: "Scale free", displayOrder: 80, active: true, requireFarm: false, updatedAt: new Date() },
+  });
+  assert.equal(numberOne.name, "#1");
+  assert.equal(numberOne.requireFarm, true);
+  assert.equal(scale.name, "Scale free");
+  const farmA = await prisma.farm.create({
+    data: { name: "Draw farm A", displayOrder: 81, active: true, updatedAt: new Date() },
+  });
+  const farmB = await prisma.farm.create({
+    data: { name: "Draw farm B", displayOrder: 82, active: true, updatedAt: new Date() },
+  });
+  await carry(farmA.id, size.id, numberOne.id, 2);
+  const session = { role: "counter" as const, access: "yard" as const, name: "Draw crew", counterId: "counter-draw" };
+  const base = {
+    timestampLocal: "2026-10-26T08:00:00.000-04:00",
+    action: constants.ACTIONS.YARD,
+    sizeId: size.id,
+    sizeName: size.name,
+    quantity: 1,
+    sessionId: "session-draw",
+    sessionStartedAt: new Date().toISOString(),
+  };
+
+  const beforeLink = await counts.syncCounts(session, [
+    {
+      ...base,
+      clientSyncId: "draw-before-link",
+      farmId: farmB.id,
+      farmName: farmB.name,
+      gradeId: scale.id,
+      gradeName: "Scale free",
+    },
+  ]);
+  assert.equal(beforeLink.accepted[0]?.miscount, false);
+  const historical = await prisma.countRecord.findUniqueOrThrow({ where: { clientSyncId: "draw-before-link" } });
+  assert.equal(historical.gradeId, scale.id);
+  assert.equal(historical.gradeName, "Scale free");
+
+  await prisma.treeGrade.update({ where: { id: scale.id }, data: { drawsFromGradeId: numberOne.id } });
+  const named = await prisma.treeGrade.findUniqueOrThrow({ where: { id: scale.id } });
+  assert.equal(named.name, "Scale free");
+  assert.equal(named.drawsFromGradeId, numberOne.id);
+  const historicalStill = await prisma.countRecord.findUniqueOrThrow({ where: { clientSyncId: "draw-before-link" } });
+  assert.equal(historicalStill.gradeId, scale.id);
+  assert.equal(historicalStill.gradeName, "Scale free");
+
+  const onPile = await counts.syncCounts(session, [
+    {
+      ...base,
+      clientSyncId: "draw-scale-a1",
+      farmId: farmA.id,
+      farmName: farmA.name,
+      gradeId: scale.id,
+      gradeName: "Scale free",
+    },
+  ]);
+  assert.equal(onPile.accepted[0]?.miscount, false);
+  assert.equal(onPile.rejected.length, 0);
+  const savedScale = await prisma.countRecord.findUniqueOrThrow({ where: { clientSyncId: "draw-scale-a1" } });
+  assert.equal(savedScale.gradeId, scale.id);
+  assert.equal(savedScale.gradeName, "Scale free");
+
+  const blocked = await counts.syncCounts(session, [
+    {
+      ...base,
+      clientSyncId: "draw-scale-b-blocked",
+      farmId: farmB.id,
+      farmName: farmB.name,
+      gradeId: scale.id,
+      gradeName: "Scale free",
+    },
+  ]);
+  assert.equal(blocked.accepted[0]?.miscount, true);
+  assert.equal(await prisma.countRecord.count({ where: { clientSyncId: "draw-scale-b-blocked" } }), 0);
+  assert.equal(await prisma.miscount.count({ where: { clientSyncId: "draw-scale-b-blocked" } }), 1);
+  const mis = await prisma.miscount.findUniqueOrThrow({ where: { clientSyncId: "draw-scale-b-blocked" } });
+  assert.equal(mis.gradeId, scale.id);
+  assert.equal(mis.gradeName, "Scale free");
+
+  const numberOneTap = await counts.syncCounts(session, [
+    {
+      ...base,
+      clientSyncId: "draw-one-a",
+      farmId: farmA.id,
+      farmName: farmA.name,
+      gradeId: numberOne.id,
+      gradeName: "#1",
+    },
+  ]);
+  assert.equal(numberOneTap.accepted[0]?.miscount, false);
+
+  let progress = await farmProgress();
+  let pile = progress.find((row) => row.farmId === farmA.id && row.sizeId === size.id && row.gradeId === numberOne.id);
+  assert.equal(pile?.starting, 2);
+  assert.equal(pile?.received, 2);
+  assert.equal(pile?.notYetReceived, 0);
+  assert.equal(pile?.exceeded, false);
+  assert.equal(pile?.gradeName, "#1");
+  assert.equal(
+    progress.some((row) => row.farmId === farmA.id && row.sizeId === size.id && row.gradeId === scale.id),
+    false,
+  );
+
+  const over = await counts.syncCounts(session, [
+    {
+      ...base,
+      clientSyncId: "draw-scale-a2",
+      farmId: farmA.id,
+      farmName: farmA.name,
+      gradeId: scale.id,
+      gradeName: "Scale free",
+    },
+  ]);
+  assert.equal(over.accepted[0]?.miscount, false);
+  progress = await farmProgress();
+  pile = progress.find((row) => row.farmId === farmA.id && row.sizeId === size.id && row.gradeId === numberOne.id);
+  assert.equal(pile?.received, 3);
+  assert.equal(pile?.notYetReceived, 0);
+  assert.equal(pile?.exceeded, true);
+
+  const stats = await dashboardStats();
+  const scaleRow = stats.byCategory.find((row) => row.sizeName === "Draw size" && row.gradeName === "Scale free");
+  const oneRow = stats.byCategory.find((row) => row.sizeName === "Draw size" && row.gradeName === "#1");
+  assert.equal(scaleRow?.received, 3);
+  assert.equal(oneRow?.received, 1);
+
+  const buyer =
+    (await prisma.customer.findFirst({ where: { active: true } })) ??
+    (await prisma.customer.create({ data: { name: "Draw buyer", displayOrder: 11, active: true } }));
+  const shipped = await counts.syncCounts(
+    { role: "counter" as const, access: "shipping" as const, name: "Ship crew", counterId: "counter-draw-ship" },
+    [
+      {
+        ...base,
+        clientSyncId: "draw-ship-scale",
+        action: constants.ACTIONS.SHIP,
+        farmId: null,
+        farmName: null,
+        customerId: buyer.id,
+        customerName: buyer.name,
+        gradeId: scale.id,
+        gradeName: "Scale free",
+      },
+    ],
+  );
+  assert.equal(shipped.accepted[0]?.miscount, false);
+  progress = await farmProgress();
+  pile = progress.find((row) => row.farmId === farmA.id && row.sizeId === size.id && row.gradeId === numberOne.id);
+  assert.equal(pile?.received, 3);
+
+  const voided = await counts.voidCount({ clientSyncId: "draw-scale-a2" }, "test");
+  assert.equal(voided.ok, true);
+  const voidedRow = await prisma.countRecord.findUniqueOrThrow({ where: { clientSyncId: "draw-scale-a2" } });
+  assert.equal(voidedRow.gradeId, scale.id);
+  assert.equal(voidedRow.gradeName, "Scale free");
+  assert.ok(voidedRow.voidedAt);
+  progress = await farmProgress();
+  pile = progress.find((row) => row.farmId === farmA.id && row.sizeId === size.id && row.gradeId === numberOne.id);
+  assert.equal(pile?.received, 2);
+  assert.equal(pile?.exceeded, false);
+
+  const counterToken = await signSession(session);
+  const catalog = await catalogGet(
+    new NextRequest("http://localhost/api/catalog", { headers: { cookie: `ptf_session=${counterToken}` } }),
+  );
+  assert.equal(catalog.status, 200);
+  const catalogBody = (await catalog.json()) as {
+    grades: { id: string; name: string; requireFarm: boolean; drawsFromGradeId: string | null; inventoryRequireFarm: boolean }[];
+    startingProgress: { farmId: string; sizeId: string; gradeId: string; received: number; exceeded: boolean }[];
+  };
+  const catalogScale = catalogBody.grades.find((row) => row.id === scale.id);
+  assert.equal(catalogScale?.name, "Scale free");
+  assert.equal(catalogScale?.requireFarm, false);
+  assert.equal(catalogScale?.drawsFromGradeId, numberOne.id);
+  assert.equal(catalogScale?.inventoryRequireFarm, true);
+  const catalogPile = catalogBody.startingProgress.find(
+    (row) => row.farmId === farmA.id && row.sizeId === size.id && row.gradeId === numberOne.id,
+  );
+  assert.equal(catalogPile?.received, 2);
+  assert.equal(catalogPile?.exceeded, false);
+
+  const admin = await prisma.adminAccount.findFirstOrThrow();
+  const adminToken = await signSession({ role: "admin", adminId: admin.id, access: "admin", name: admin.name });
+  const selfLink = await PATCH(
+    new NextRequest("http://localhost/api/admin/categories", {
+      method: "PATCH",
+      headers: { cookie: `ptf_session=${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "grade", id: scale.id, drawsFromGradeId: scale.id }),
+    }),
+  );
+  assert.equal(selfLink.status, 400);
+  const counterPatch = await PATCH(
+    new NextRequest("http://localhost/api/admin/categories", {
+      method: "PATCH",
+      headers: { cookie: `ptf_session=${counterToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "grade", id: scale.id, drawsFromGradeId: null }),
+    }),
+  );
+  assert.equal(counterPatch.status, 401);
+  const cleared = await PATCH(
+    new NextRequest("http://localhost/api/admin/categories", {
+      method: "PATCH",
+      headers: { cookie: `ptf_session=${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "grade", id: scale.id, drawsFromGradeId: null }),
+    }),
+  );
+  assert.equal(cleared.status, 200);
+  const clearedBody = (await cleared.json()) as { item: { name: string; drawsFromGradeId: string | null } };
+  assert.equal(clearedBody.item.name, "Scale free");
+  assert.equal(clearedBody.item.drawsFromGradeId, null);
+  const restored = await PATCH(
+    new NextRequest("http://localhost/api/admin/categories", {
+      method: "PATCH",
+      headers: { cookie: `ptf_session=${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "grade", id: scale.id, drawsFromGradeId: numberOne.id }),
+    }),
+  );
+  assert.equal(restored.status, 200);
+  const restoredBody = (await restored.json()) as { item: { name: string; drawsFromGradeId: string | null } };
+  assert.equal(restoredBody.item.name, "Scale free");
+  assert.equal(restoredBody.item.drawsFromGradeId, numberOne.id);
+
+  await prisma.$executeRawUnsafe(`ALTER TABLE "TreeGrade" DROP COLUMN "drawsFromGradeId"`);
+  try {
+    const fallback = await counts.syncCounts(session, [
+      {
+        ...base,
+        clientSyncId: "draw-column-missing",
+        farmId: farmB.id,
+        farmName: farmB.name,
+        gradeId: scale.id,
+        gradeName: "Scale free",
+      },
+    ]);
+    assert.equal(fallback.accepted[0]?.miscount, false);
+    assert.equal(await prisma.countRecord.count({ where: { clientSyncId: "draw-column-missing" } }), 1);
+  } finally {
+    await prisma.$executeRawUnsafe(`ALTER TABLE "TreeGrade" ADD COLUMN "drawsFromGradeId" TEXT`);
+  }
+});
+
 test("cleanup temp database", async () => {
   await prisma.$disconnect();
   rmSync(dir, { recursive: true, force: true });

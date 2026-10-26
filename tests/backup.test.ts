@@ -176,8 +176,16 @@ test("seed operational data and export without secrets", async () => {
   const size = await prisma.treeSize.create({
     data: { name: "Boughs", color: "#335544", requireFarm: false, displayOrder: 0, active: true, updatedAt: new Date() },
   });
+  const numberOne = await prisma.treeGrade.findFirstOrThrow({ where: { name: "#1" } });
   const grade = await prisma.treeGrade.create({
-    data: { name: "#2 Utility Cull", requireFarm: false, displayOrder: 0, active: true, updatedAt: new Date() },
+    data: {
+      name: "#2 Utility Cull",
+      requireFarm: false,
+      drawsFromGradeId: numberOne.id,
+      displayOrder: 0,
+      active: true,
+      updatedAt: new Date(),
+    },
   });
   await prisma.startingInventory.create({
     data: { farmId: farm.id, sizeId: size.id, gradeId: grade.id, quantity: 40, updatedAt: new Date() },
@@ -256,6 +264,13 @@ test("seed operational data and export without secrets", async () => {
   assert.equal(saved.counterAccounts[0]?.countHand, "left");
   assert.equal(saved.sizes.find((row) => row.name === "Boughs")?.requireFarm, false);
   assert.equal(saved.grades.find((row) => row.name === "#2 Utility Cull")?.requireFarm, false);
+  assert.equal(saved.grades.find((row) => row.name === "#2 Utility Cull")?.drawsFromGradeId, numberOne.id);
+  assert.equal(saved.grades.find((row) => row.name === "#1")?.name, "#1");
+  const legacy = JSON.parse(JSON.stringify(saved)) as Doc;
+  for (const row of legacy.grades) delete (row as { drawsFromGradeId?: string | null }).drawsFromGradeId;
+  const parsedLegacy = parseBackupDocument(legacy);
+  assert.equal(parsedLegacy.ok, true);
+  if (parsedLegacy.ok) assert.equal(parsedLegacy.doc.grades.every((row) => row.drawsFromGradeId === null), true);
   assert.equal(saved.miscounts.length, 1);
   assert.equal(saved.counts.filter((row) => row.action === "Shipped")[0]?.customerName, "North Ridge Nursery");
   assert.equal("passwordHash" in (saved.adminAccounts[0] || {}), false);
@@ -323,6 +338,10 @@ test("wipe to a fresh admin and restore the same rows", async () => {
   assert.equal(size.color, "#335544");
   const grade = await prisma.treeGrade.findFirstOrThrow({ where: { name: "#2 Utility Cull" } });
   assert.equal(grade.requireFarm, false);
+  assert.equal(grade.name, "#2 Utility Cull");
+  const numberOne = await prisma.treeGrade.findFirstOrThrow({ where: { name: "#1" } });
+  assert.equal(numberOne.name, "#1");
+  assert.equal(grade.drawsFromGradeId, numberOne.id);
   const inventory = await prisma.startingInventory.findFirstOrThrow();
   assert.equal(inventory.quantity, 40);
   const shipped = await prisma.countRecord.findFirstOrThrow({ where: { clientSyncId: "ship-sync-1" } });
@@ -425,7 +444,7 @@ test("restore route is admin only and rejects a bad confirmation", async () => {
   assert.equal(status.status, 200);
   const line = ((await status.json()) as { line: string }).line;
   assert.match(line, /Last export: never/);
-  assert.match(line, /Last download: Oct 16, 2026, .* — OK/);
+  assert.match(line, /Last download: [A-Z][a-z]{2} \d{1,2}, \d{4}, .+ — OK/);
 
   const counterStatus = await GET(
     new NextRequest("http://localhost/api/admin/backup?view=status", { headers: { cookie: `ptf_session=${counterToken}` } }),
@@ -469,8 +488,14 @@ test("export endpoint rejects a missing or wrong token and returns operational J
   assert.doesNotMatch(raw, /passwordHash|pinHash|pinKey|excelApiKeyHash|countHand/);
   const sizes = queryBody.sizes as { name: string; requireFarm: boolean }[];
   assert.equal(sizes.find((row) => row.name === "Boughs")?.requireFarm, false);
-  assert.match(await backupStatusLine(), /Last export: Oct 16, 2026, .* — OK/);
-  assert.match(await backupStatusLine(), /Last download: Oct 16, 2026, .* — OK/);
+  const exportedGrades = queryBody.grades as { id: string; name: string; drawsFromGradeId: string | null }[];
+  const exportedUtility = exportedGrades.find((row) => row.name === "#2 Utility Cull");
+  const exportedOne = exportedGrades.find((row) => row.name === "#1");
+  assert.equal(exportedUtility?.name, "#2 Utility Cull");
+  assert.equal(exportedOne?.name, "#1");
+  assert.equal(exportedUtility?.drawsFromGradeId, exportedOne?.id);
+  assert.match(await backupStatusLine(), /Last export: [A-Z][a-z]{2} \d{1,2}, \d{4}, .+ — OK/);
+  assert.match(await backupStatusLine(), /Last download: [A-Z][a-z]{2} \d{1,2}, \d{4}, .+ — OK/);
 
   const byBearer = await GET(
     new NextRequest("http://localhost/api/backup/export", {
@@ -502,6 +527,15 @@ test("apps script parser writes tabs from a real export and leaves them on a fet
     JSON.stringify(["SizeID", "Name", "Color", "RequireFarm", "DisplayOrder", "Active", "CreatedAt", "UpdatedAt"]),
   );
   const requireCol = sizes.rows[0].indexOf("RequireFarm");
+  const gradeTable = tables.find((table) => table.title === "Grades")!;
+  assert.equal(
+    JSON.stringify(gradeTable.rows[0]),
+    JSON.stringify(["GradeID", "Name", "RequireFarm", "DrawsFromGradeID", "DisplayOrder", "Active", "CreatedAt", "UpdatedAt"]),
+  );
+  const drawCol = gradeTable.rows[0].indexOf("DrawsFromGradeID");
+  const utilityRow = gradeTable.rows.slice(1).find((row) => row[1] === "#2 Utility Cull");
+  const oneRow = gradeTable.rows.slice(1).find((row) => row[1] === "#1");
+  assert.equal(utilityRow?.[drawCol], oneRow?.[0]);
   const boughs = sizes.rows.slice(1).find((row) => row[1] === "Boughs");
   assert.equal(boughs?.[requireCol], "false");
   const dumped = JSON.stringify(tables);

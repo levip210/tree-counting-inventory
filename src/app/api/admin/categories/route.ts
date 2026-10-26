@@ -3,6 +3,8 @@ import { errorJson, json } from "@/lib/session";
 import { sessionFromRequest } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
 import { normalizeSizeColor } from "@/lib/size-color";
+import { validateDrawTarget } from "@/lib/grade-draw";
+import { annotateGrades, clearIncomingDraws, isMissingDrawColumn, loadGradeDraws } from "@/server/grade-draw";
 import { attachRequireFarm } from "@/server/require-farm";
 
 export const runtime = "nodejs";
@@ -56,8 +58,9 @@ export async function GET(req: NextRequest) {
     select: gradeFields,
   });
   const withFlag = await attachRequireFarm("grade", rows);
+  const withDraw = await annotateGrades(withFlag);
   const items = await Promise.all(
-    withFlag.map(async (row) => ({
+    withDraw.map(async (row) => ({
       ...row,
       countTotal: await prisma.countRecord.count({ where: { gradeId: row.id } }),
     })),
@@ -93,7 +96,8 @@ export async function POST(req: NextRequest) {
       data: { name, displayOrder: (max._max.displayOrder ?? -1) + 1, active: true, updatedAt: now },
       select: gradeFields,
     });
-    const [item] = await attachRequireFarm("grade", [created]);
+    const [flagged] = await attachRequireFarm("grade", [created]);
+    const [item] = await annotateGrades([flagged]);
     return json({ ok: true, item });
   } catch (err) {
     if (isMissingColumn(err)) {
@@ -171,15 +175,28 @@ export async function PATCH(req: NextRequest) {
     ]);
     return json({ ok: true });
   }
-  const data: { name?: string; active?: boolean; requireFarm?: boolean; updatedAt: Date } = { updatedAt: new Date() };
+  const data: { name?: string; active?: boolean; requireFarm?: boolean; drawsFromGradeId?: string | null; updatedAt: Date } = {
+    updatedAt: new Date(),
+  };
   if (typeof body.name === "string" && body.name.trim()) data.name = body.name.trim();
   if (typeof body.active === "boolean") data.active = body.active;
   if (typeof body.requireFarm === "boolean") data.requireFarm = body.requireFarm;
+  if ("drawsFromGradeId" in body) {
+    const grades = await loadGradeDraws();
+    const raw = body.drawsFromGradeId == null || body.drawsFromGradeId === "" ? null : String(body.drawsFromGradeId);
+    const verdict = validateDrawTarget(id, raw, grades);
+    if (!verdict.ok) return errorJson(verdict.error, 400);
+    data.drawsFromGradeId = verdict.drawsFromGradeId;
+  }
   try {
     const updated = await prisma.treeGrade.update({ where: { id }, data, select: gradeFields });
-    const [item] = await attachRequireFarm("grade", [updated]);
+    const [flagged] = await attachRequireFarm("grade", [updated]);
+    const [item] = await annotateGrades([flagged]);
     return json({ ok: true, item });
   } catch (err) {
+    if (isMissingDrawColumn(err)) {
+      return errorJson("The inventory-pile setting is not ready yet. Try again in a moment.", 503);
+    }
     if (isMissingColumn(err)) {
       return errorJson("The require-farm setting is not ready yet. Try again in a moment.", 503);
     }
@@ -208,6 +225,7 @@ export async function DELETE(req: NextRequest) {
     await prisma.startingInventory.deleteMany({ where: { sizeId: id } });
     await prisma.treeSize.delete({ where: { id } });
   } else {
+    await clearIncomingDraws(id);
     await prisma.startingInventory.deleteMany({ where: { gradeId: id } });
     await prisma.treeGrade.delete({ where: { id } });
   }

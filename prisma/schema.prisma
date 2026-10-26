@@ -74,6 +74,10 @@ model TreeGrade {
   name         String
   /// When true (default), Yard Receiving counts this grade only if the farm lists it.
   requireFarm  Boolean             @default(true)
+  /// Yard counts of this grade use that grade's starting-inventory pile for the
+  /// same farm and size. Null means this grade uses its own inventory rows.
+  /// The saved count stays on this grade. This is not a rename.
+  drawsFromGradeId String?
   displayOrder Int                 @default(0)
   active       Boolean             @default(true)
   createdAt    DateTime            @default(now())

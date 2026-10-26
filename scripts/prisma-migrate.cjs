@@ -129,7 +129,7 @@ async function main() {
 
   if (ensured.ok) {
     if (migrateCode !== 0) {
-      console.log("[start] migrate reported failure; schema ensure left TreeSize.color, Miscount, customers, countHand, requireFarm, and backup status in place");
+      console.log("[start] migrate reported failure; schema ensure left TreeSize.color, Miscount, customers, countHand, requireFarm, backup status, and grade draw in place");
     }
     process.exit(0);
   }

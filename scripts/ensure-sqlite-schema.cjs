@@ -19,6 +19,18 @@ const COUNT_HAND_MIGRATION = "20261008153000_count_hand";
 const REQUIRE_FARM_MIGRATION = "20261008170000_require_farm";
 const BACKUP_STATUS_MIGRATION = "20261016140000_backup_status";
 const BACKUP_DOWNLOAD_MIGRATION = "20261016153000_backup_download";
+const GRADE_DRAW_MIGRATION = "20261026210000_grade_draws_from";
+
+// Keep this UPDATE identical to prisma/migrations/20261026210000_grade_draws_from/migration.sql.
+// It fills an empty link only. It does not rename grades or rewrite counts.
+const LINK_SCALE_FREE_SQL = `UPDATE "TreeGrade"
+SET "drawsFromGradeId" = (
+  SELECT "id" FROM "TreeGrade" WHERE "name" = '#1'
+)
+WHERE "name" = 'Scale free'
+  AND "drawsFromGradeId" IS NULL
+  AND (SELECT COUNT(*) FROM "TreeGrade" WHERE "name" = 'Scale free') = 1
+  AND (SELECT COUNT(*) FROM "TreeGrade" WHERE "name" = '#1') = 1`;
 
 const CUSTOMER_TABLE_SQL = `CREATE TABLE "Customer" (
     "id" TEXT NOT NULL PRIMARY KEY,
@@ -68,6 +80,14 @@ function columnNames(db, table) {
 
 function fileChecksum(filePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function migrationRecorded(db, name) {
+  if (!tableExists(db, "_prisma_migrations")) return false;
+  const existing = db
+    .prepare(`SELECT 1 AS ok FROM "_prisma_migrations" WHERE "migration_name" = ?`)
+    .get(name);
+  return Boolean(existing);
 }
 
 function recordMigration(db, { name, sqlPath }) {
@@ -205,6 +225,37 @@ function ensureBackupStatus(db, migrationsDir) {
     if (recorded) console.log("[start] recorded prisma migration", BACKUP_STATUS_MIGRATION);
   }
   return { ok: ready, added, recorded };
+}
+
+function ensureGradeDraw(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, GRADE_DRAW_MIGRATION, "migration.sql");
+  let added = false;
+  if (tableExists(db, "TreeGrade")) {
+    added = addColumnIfMissing(
+      db,
+      "TreeGrade",
+      "drawsFromGradeId",
+      `ALTER TABLE "TreeGrade" ADD COLUMN "drawsFromGradeId" TEXT`,
+    );
+  }
+  const ready = !tableExists(db, "TreeGrade") || columnNames(db, "TreeGrade").includes("drawsFromGradeId");
+  let recorded = false;
+  let linked = 0;
+  if (ready && tableExists(db, "TreeGrade")) {
+    // Only the first time this migration is recorded. A later admin clear of the
+    // link must survive the next boot.
+    if (!migrationRecorded(db, GRADE_DRAW_MIGRATION)) {
+      const result = db.prepare(LINK_SCALE_FREE_SQL).run();
+      linked = Number(result.changes || 0);
+      if (linked > 0) {
+        console.log("[start] linked Scale free inventory to #1 without renaming grades");
+      }
+    }
+    recorded = recordMigration(db, { name: GRADE_DRAW_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added TreeGrade.drawsFromGradeId without rewriting counts or inventory");
+    if (recorded) console.log("[start] recorded prisma migration", GRADE_DRAW_MIGRATION);
+  }
+  return { ok: ready, added, recorded, linked };
 }
 
 function ensureBackupDownload(db, migrationsDir) {
@@ -349,6 +400,24 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
         backupDownload,
       };
     }
+
+    const gradeDraw = ensureGradeDraw(db, migrationsDir);
+    if (!gradeDraw.ok) {
+      return {
+        ok: false,
+        reason: "grade-draw-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+        requireFarm,
+        backupStatus,
+        backupDownload,
+        gradeDraw,
+      };
+    }
     return {
       ok: true,
       dbPath,
@@ -366,6 +435,9 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
       backupStatusRecorded: backupStatus.recorded,
       backupDownloadAdded: backupDownload.added,
       backupDownloadRecorded: backupDownload.recorded,
+      gradeDrawAdded: gradeDraw.added,
+      gradeDrawRecorded: gradeDraw.recorded,
+      gradeDrawLinked: gradeDraw.linked,
     };
   } finally {
     db.close();
@@ -380,6 +452,7 @@ module.exports = {
   REQUIRE_FARM_MIGRATION,
   BACKUP_STATUS_MIGRATION,
   BACKUP_DOWNLOAD_MIGRATION,
+  GRADE_DRAW_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 };

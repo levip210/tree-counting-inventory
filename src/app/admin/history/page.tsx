@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { AdminRefresh } from "@/components/AdminRefresh";
 import { AdminShell } from "@/components/AdminShell";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { MiscountReview } from "@/components/MiscountReview";
@@ -34,6 +35,10 @@ export default function HistoryPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [refreshError, setRefreshError] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
 
   const activeIds = useMemo(
     () => counts.filter((c) => !c.voidedAt).map((c) => c.countId),
@@ -45,20 +50,30 @@ export default function HistoryPage() {
   );
   const allVisibleSelected = activeIds.length > 0 && selectedIds.length === activeIds.length;
 
-  async function load() {
-    const params = new URLSearchParams();
-    if (action) params.set("action", action);
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
-    if (q) params.set("q", q);
-    if (includeVoided) params.set("includeVoided", "1");
-    const data = await api<{ counts: Count[] }>(`/api/admin/history?${params.toString()}`);
-    setCounts(data.counts);
-    const keep = new Set(data.counts.filter((c) => !c.voidedAt).map((c) => c.countId));
-    setSelected((prev) => new Set([...prev].filter((id) => keep.has(id))));
+  async function load(reloadMiscounts = false) {
+    setRefreshing(true);
+    setRefreshError("");
+    try {
+      const params = new URLSearchParams();
+      if (action) params.set("action", action);
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      if (q) params.set("q", q);
+      if (includeVoided) params.set("includeVoided", "1");
+      const data = await api<{ counts: Count[] }>(`/api/admin/history?${params.toString()}`);
+      setCounts(data.counts);
+      const keep = new Set(data.counts.filter((c) => !c.voidedAt).map((c) => c.countId));
+      setSelected((prev) => new Set([...prev].filter((id) => keep.has(id))));
+      setUpdatedAt(new Date());
+      if (reloadMiscounts) setReloadToken((n) => n + 1);
+    } catch (e) {
+      setRefreshError(e instanceof Error ? e.message : "Could not refresh.");
+    } finally {
+      setRefreshing(false);
+    }
   }
   useEffect(() => {
-    load().catch((e) => setMsg(e.message));
+    void load();
   }, []);
 
   function toggle(id: string) {
@@ -124,7 +139,9 @@ export default function HistoryPage() {
 
   return (
     <AdminShell title="Count history">
+      <AdminRefresh busy={refreshing} updatedAt={updatedAt} onRefresh={() => void load(true)} />
       <p>Corrections are here. This table never includes who counted — not a name, PIN, account, email, or device id.</p>
+      {refreshError ? <div className="alert info">{refreshError}</div> : null}
       {msg ? <div className="alert info">{msg}</div> : null}
       <div className="row">
         <select value={action} onChange={(e) => setAction(e.target.value)}>
@@ -214,7 +231,7 @@ export default function HistoryPage() {
           </tbody>
         </table>
       </div>
-      <MiscountReview />
+      <MiscountReview reloadToken={reloadToken} />
       {pendingDelete ? (
         <ConfirmDialog
           title={deleteCount === 1 ? "Delete this count?" : `Delete ${deleteCount} counts?`}

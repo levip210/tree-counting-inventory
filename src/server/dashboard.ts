@@ -1,6 +1,8 @@
 import { ACTIONS, TIMEZONE } from "../lib/constants";
+import { resolveInventoryGrade } from "../lib/grade-draw";
 import { prisma } from "../lib/prisma";
 import { localDateKey } from "../lib/security";
+import { loadGradeDraws } from "./grade-draw";
 
 function activeFilter() {
   return { voidedAt: null };
@@ -84,11 +86,12 @@ export async function dashboardStats() {
 }
 
 export async function farmProgress() {
-  const [inventory, farms, sizes, grades, counts] = await Promise.all([
+  const [inventory, farms, sizes, grades, draws, counts] = await Promise.all([
     prisma.startingInventory.findMany(),
     prisma.farm.findMany(),
     prisma.treeSize.findMany({ select: { id: true, name: true } }),
     prisma.treeGrade.findMany({ select: { id: true, name: true } }),
+    loadGradeDraws(),
     prisma.countRecord.findMany({
       where: { action: ACTIONS.YARD, voidedAt: null },
       select: { farmId: true, sizeId: true, gradeId: true, quantity: true },
@@ -98,7 +101,8 @@ export async function farmProgress() {
   const receivedMap = new Map<string, number>();
   for (const c of counts) {
     if (!c.farmId) continue;
-    const key = `${c.farmId}|${c.sizeId}|${c.gradeId}`;
+    const pileGradeId = resolveInventoryGrade(c.gradeId, draws).inventoryGradeId;
+    const key = `${c.farmId}|${c.sizeId}|${pileGradeId}`;
     receivedMap.set(key, (receivedMap.get(key) || 0) + (c.quantity || 1));
   }
 
