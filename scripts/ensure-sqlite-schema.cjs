@@ -1,0 +1,467 @@
+"use strict";
+
+/**
+ * Production safety net for SQLite on the Railway volume.
+ *
+ * If `prisma migrate deploy` hiccups, the Next app still starts (CMD uses `;`)
+ * and then P2022s on a missing column. This adds known columns when missing
+ * without dropping tables or rewriting farm data, and records the Prisma
+ * migration so a later successful migrate does not try ADD COLUMN twice.
+ */
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+
+const SIZE_COLOR_MIGRATION = "20260915180000_size_color";
+const MISCOUNT_MIGRATION = "20260925170000_miscount";
+const CUSTOMERS_MIGRATION = "20261005180000_customers";
+const COUNT_HAND_MIGRATION = "20261008153000_count_hand";
+const REQUIRE_FARM_MIGRATION = "20261008170000_require_farm";
+const BACKUP_STATUS_MIGRATION = "20261016140000_backup_status";
+const BACKUP_DOWNLOAD_MIGRATION = "20261016153000_backup_download";
+const GRADE_DRAW_MIGRATION = "20261026210000_grade_draws_from";
+
+// Keep this UPDATE identical to prisma/migrations/20261026210000_grade_draws_from/migration.sql.
+// It fills an empty link only. It does not rename grades or rewrite counts.
+const LINK_SCALE_FREE_SQL = `UPDATE "TreeGrade"
+SET "drawsFromGradeId" = (
+  SELECT "id" FROM "TreeGrade" WHERE "name" = '#1'
+)
+WHERE "name" = 'Scale free'
+  AND "drawsFromGradeId" IS NULL
+  AND (SELECT COUNT(*) FROM "TreeGrade" WHERE "name" = 'Scale free') = 1
+  AND (SELECT COUNT(*) FROM "TreeGrade" WHERE "name" = '#1') = 1`;
+
+const CUSTOMER_TABLE_SQL = `CREATE TABLE "Customer" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "displayOrder" INTEGER NOT NULL DEFAULT 0,
+    "active" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+);`;
+
+const PRISMA_MIGRATIONS_DDL = `CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
+    "id"                    TEXT PRIMARY KEY NOT NULL,
+    "checksum"              TEXT NOT NULL,
+    "finished_at"           DATETIME,
+    "migration_name"        TEXT NOT NULL,
+    "logs"                  TEXT,
+    "rolled_back_at"        DATETIME,
+    "started_at"            DATETIME NOT NULL DEFAULT current_timestamp,
+    "applied_steps_count"   INTEGER UNSIGNED NOT NULL DEFAULT 0
+);`;
+
+function sqlitePathFromDatabaseUrl(databaseUrl, cwd = process.cwd()) {
+  if (!databaseUrl) return null;
+  const raw = String(databaseUrl).trim();
+  if (!raw.startsWith("file:")) return null;
+  let rest = raw.slice("file:".length);
+  if (rest.startsWith("///")) rest = rest.slice(2);
+  if (path.isAbsolute(rest)) return rest;
+  return path.resolve(cwd, rest);
+}
+
+function openSqlite(filePath) {
+  const { DatabaseSync } = require("node:sqlite");
+  return new DatabaseSync(filePath);
+}
+
+function tableExists(db, name) {
+  const row = db
+    .prepare(`SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = ?`)
+    .get(name);
+  return Boolean(row);
+}
+
+function columnNames(db, table) {
+  return db.prepare(`PRAGMA table_info("${table.replaceAll('"', '""')}")`).all().map((c) => c.name);
+}
+
+function fileChecksum(filePath) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function migrationRecorded(db, name) {
+  if (!tableExists(db, "_prisma_migrations")) return false;
+  const existing = db
+    .prepare(`SELECT 1 AS ok FROM "_prisma_migrations" WHERE "migration_name" = ?`)
+    .get(name);
+  return Boolean(existing);
+}
+
+function recordMigration(db, { name, sqlPath }) {
+  if (!tableExists(db, "_prisma_migrations")) {
+    db.exec(PRISMA_MIGRATIONS_DDL);
+  }
+  const existing = db
+    .prepare(`SELECT 1 AS ok FROM "_prisma_migrations" WHERE "migration_name" = ?`)
+    .get(name);
+  if (existing) return { recorded: false };
+  if (!fs.existsSync(sqlPath)) {
+    console.error("[start] migration sql missing, cannot record", sqlPath);
+    return { recorded: false };
+  }
+  const checksum = fileChecksum(sqlPath);
+  db.prepare(
+    `INSERT INTO "_prisma_migrations"
+      ("id", "checksum", "finished_at", "migration_name", "logs", "rolled_back_at", "started_at", "applied_steps_count")
+      VALUES (?, ?, datetime('now'), ?, NULL, NULL, datetime('now'), 1)`,
+  ).run(crypto.randomUUID(), checksum, name);
+  return { recorded: true };
+}
+
+function addColumnIfMissing(db, table, column, ddl) {
+  if (!tableExists(db, table)) return false;
+  const cols = columnNames(db, table);
+  if (cols.includes(column)) return false;
+  console.log(`[start] ${table}.${column} missing; ${ddl}`);
+  db.exec(ddl);
+  return true;
+}
+
+function ensureCustomers(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, CUSTOMERS_MIGRATION, "migration.sql");
+  let added = false;
+  if (!tableExists(db, "Customer")) {
+    console.log("[start] Customer table missing; creating it");
+    db.exec(CUSTOMER_TABLE_SQL);
+    added = true;
+  }
+  added = addColumnIfMissing(db, "CountSession", "customerId", `ALTER TABLE "CountSession" ADD COLUMN "customerId" TEXT`) || added;
+  added = addColumnIfMissing(db, "CountSession", "customerName", `ALTER TABLE "CountSession" ADD COLUMN "customerName" TEXT`) || added;
+  added = addColumnIfMissing(db, "CountRecord", "customerId", `ALTER TABLE "CountRecord" ADD COLUMN "customerId" TEXT`) || added;
+  added = addColumnIfMissing(db, "CountRecord", "customerName", `ALTER TABLE "CountRecord" ADD COLUMN "customerName" TEXT`) || added;
+  if (tableExists(db, "CountRecord")) {
+    db.exec(`CREATE INDEX IF NOT EXISTS "CountRecord_customerId_idx" ON "CountRecord"("customerId")`);
+  }
+
+  const customerOk = tableExists(db, "Customer");
+  const sessionOk = !tableExists(db, "CountSession") || columnNames(db, "CountSession").includes("customerName");
+  const countOk = !tableExists(db, "CountRecord") || columnNames(db, "CountRecord").includes("customerName");
+  const ready = customerOk && sessionOk && countOk;
+  let recorded = false;
+  if (ready) {
+    recorded = recordMigration(db, { name: CUSTOMERS_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added customer shipping fields without touching existing rows");
+    if (recorded) console.log("[start] recorded prisma migration", CUSTOMERS_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
+function ensureCountHand(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, COUNT_HAND_MIGRATION, "migration.sql");
+  let added = false;
+  added =
+    addColumnIfMissing(
+      db,
+      "AdminAccount",
+      "countHand",
+      `ALTER TABLE "AdminAccount" ADD COLUMN "countHand" TEXT NOT NULL DEFAULT 'right'`,
+    ) || added;
+  added =
+    addColumnIfMissing(
+      db,
+      "CounterAccount",
+      "countHand",
+      `ALTER TABLE "CounterAccount" ADD COLUMN "countHand" TEXT NOT NULL DEFAULT 'right'`,
+    ) || added;
+
+  const adminOk = !tableExists(db, "AdminAccount") || columnNames(db, "AdminAccount").includes("countHand");
+  const counterOk = !tableExists(db, "CounterAccount") || columnNames(db, "CounterAccount").includes("countHand");
+  const ready = adminOk && counterOk;
+  const tablesPresent = tableExists(db, "AdminAccount") || tableExists(db, "CounterAccount");
+  let recorded = false;
+  if (ready && tablesPresent) {
+    recorded = recordMigration(db, { name: COUNT_HAND_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added countHand without touching existing account rows");
+    if (recorded) console.log("[start] recorded prisma migration", COUNT_HAND_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
+function ensureRequireFarm(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, REQUIRE_FARM_MIGRATION, "migration.sql");
+  const ddl = `BOOLEAN NOT NULL DEFAULT true`;
+  let added = false;
+  added =
+    addColumnIfMissing(db, "TreeSize", "requireFarm", `ALTER TABLE "TreeSize" ADD COLUMN "requireFarm" ${ddl}`) || added;
+  added =
+    addColumnIfMissing(db, "TreeGrade", "requireFarm", `ALTER TABLE "TreeGrade" ADD COLUMN "requireFarm" ${ddl}`) ||
+    added;
+
+  const sizeOk = !tableExists(db, "TreeSize") || columnNames(db, "TreeSize").includes("requireFarm");
+  const gradeOk = !tableExists(db, "TreeGrade") || columnNames(db, "TreeGrade").includes("requireFarm");
+  const ready = sizeOk && gradeOk;
+  const bothTables = tableExists(db, "TreeSize") && tableExists(db, "TreeGrade");
+  let recorded = false;
+  if (ready && bothTables) {
+    recorded = recordMigration(db, { name: REQUIRE_FARM_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added requireFarm without touching existing sizes or grades");
+    if (recorded) console.log("[start] recorded prisma migration", REQUIRE_FARM_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
+function ensureBackupStatus(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, BACKUP_STATUS_MIGRATION, "migration.sql");
+  const columns = [
+    ["lastBackupAt", `ALTER TABLE "AppSettings" ADD COLUMN "lastBackupAt" DATETIME`],
+    ["lastBackupOk", `ALTER TABLE "AppSettings" ADD COLUMN "lastBackupOk" BOOLEAN`],
+    ["lastBackupError", `ALTER TABLE "AppSettings" ADD COLUMN "lastBackupError" TEXT`],
+  ];
+  let added = false;
+  if (tableExists(db, "AppSettings")) {
+    for (const [column, ddl] of columns) {
+      added = addColumnIfMissing(db, "AppSettings", column, ddl) || added;
+    }
+  }
+  const names = tableExists(db, "AppSettings") ? columnNames(db, "AppSettings") : [];
+  const ready = !tableExists(db, "AppSettings") || columns.every(([column]) => names.includes(column));
+  let recorded = false;
+  if (ready && tableExists(db, "AppSettings")) {
+    recorded = recordMigration(db, { name: BACKUP_STATUS_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added backup status columns without touching existing settings");
+    if (recorded) console.log("[start] recorded prisma migration", BACKUP_STATUS_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
+function ensureGradeDraw(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, GRADE_DRAW_MIGRATION, "migration.sql");
+  let added = false;
+  if (tableExists(db, "TreeGrade")) {
+    added = addColumnIfMissing(
+      db,
+      "TreeGrade",
+      "drawsFromGradeId",
+      `ALTER TABLE "TreeGrade" ADD COLUMN "drawsFromGradeId" TEXT`,
+    );
+  }
+  const ready = !tableExists(db, "TreeGrade") || columnNames(db, "TreeGrade").includes("drawsFromGradeId");
+  let recorded = false;
+  let linked = 0;
+  if (ready && tableExists(db, "TreeGrade")) {
+    // Only the first time this migration is recorded. A later admin clear of the
+    // link must survive the next boot.
+    if (!migrationRecorded(db, GRADE_DRAW_MIGRATION)) {
+      const result = db.prepare(LINK_SCALE_FREE_SQL).run();
+      linked = Number(result.changes || 0);
+      if (linked > 0) {
+        console.log("[start] linked Scale free inventory to #1 without renaming grades");
+      }
+    }
+    recorded = recordMigration(db, { name: GRADE_DRAW_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added TreeGrade.drawsFromGradeId without rewriting counts or inventory");
+    if (recorded) console.log("[start] recorded prisma migration", GRADE_DRAW_MIGRATION);
+  }
+  return { ok: ready, added, recorded, linked };
+}
+
+function ensureBackupDownload(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, BACKUP_DOWNLOAD_MIGRATION, "migration.sql");
+  let added = false;
+  if (tableExists(db, "AppSettings")) {
+    added = addColumnIfMissing(
+      db,
+      "AppSettings",
+      "lastDownloadAt",
+      `ALTER TABLE "AppSettings" ADD COLUMN "lastDownloadAt" DATETIME`,
+    );
+  }
+  const names = tableExists(db, "AppSettings") ? columnNames(db, "AppSettings") : [];
+  const ready = !tableExists(db, "AppSettings") || names.includes("lastDownloadAt");
+  let recorded = false;
+  if (ready && tableExists(db, "AppSettings")) {
+    recorded = recordMigration(db, { name: BACKUP_DOWNLOAD_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added last download column without touching existing settings");
+    if (recorded) console.log("[start] recorded prisma migration", BACKUP_DOWNLOAD_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
+function ensureSqliteSchema(databaseUrl, options = {}) {
+  const cwd = options.cwd || process.cwd();
+  const migrationsDir = options.migrationsDir || path.join(cwd, "prisma", "migrations");
+  const dbPath = sqlitePathFromDatabaseUrl(databaseUrl, cwd);
+  if (!dbPath) {
+    return { ok: false, reason: "unsupported-database-url" };
+  }
+  if (!fs.existsSync(dbPath)) {
+    console.error("[start] sqlite file not found, skip schema ensure:", dbPath);
+    return { ok: false, reason: "missing-db", dbPath };
+  }
+
+  const db = openSqlite(dbPath);
+  try {
+    if (!tableExists(db, "TreeSize")) {
+      console.error("[start] TreeSize table missing; not creating tables (refusing to wipe/rebuild).");
+      return { ok: false, reason: "missing-table", dbPath };
+    }
+
+    const cols = columnNames(db, "TreeSize");
+    let added = false;
+    if (!cols.includes("color")) {
+      console.log('[start] TreeSize.color missing; ALTER TABLE "TreeSize" ADD COLUMN "color" TEXT');
+      db.exec(`ALTER TABLE "TreeSize" ADD COLUMN "color" TEXT`);
+      added = true;
+    }
+
+    const sqlPath = path.join(migrationsDir, SIZE_COLOR_MIGRATION, "migration.sql");
+    const { recorded } = recordMigration(db, { name: SIZE_COLOR_MIGRATION, sqlPath });
+    if (added) console.log("[start] added TreeSize.color without touching existing rows");
+    if (recorded) console.log("[start] recorded prisma migration", SIZE_COLOR_MIGRATION);
+
+    const miscountSqlPath = path.join(migrationsDir, MISCOUNT_MIGRATION, "migration.sql");
+    let miscountAdded = false;
+    if (!tableExists(db, "Miscount")) {
+      if (!fs.existsSync(miscountSqlPath)) {
+        return { ok: false, reason: "miscount-sql-missing", dbPath, added, recorded };
+      }
+      console.log("[start] Miscount table missing; applying", MISCOUNT_MIGRATION);
+      db.exec(fs.readFileSync(miscountSqlPath, "utf8"));
+      miscountAdded = true;
+    }
+    const miscountRecord = recordMigration(db, { name: MISCOUNT_MIGRATION, sqlPath: miscountSqlPath });
+    if (miscountAdded) console.log("[start] added Miscount table without touching live counts");
+    if (miscountRecord.recorded) console.log("[start] recorded prisma migration", MISCOUNT_MIGRATION);
+
+    const again = columnNames(db, "TreeSize");
+    if (!again.includes("color")) {
+      return { ok: false, reason: "color-still-missing", dbPath, added, recorded, miscountAdded };
+    }
+    if (!tableExists(db, "Miscount")) {
+      return { ok: false, reason: "miscount-still-missing", dbPath, added, recorded, miscountAdded };
+    }
+
+    const customers = ensureCustomers(db, migrationsDir);
+    if (!customers.ok) {
+      return { ok: false, reason: "customers-still-missing", dbPath, added, recorded, miscountAdded, customers };
+    }
+
+    const countHand = ensureCountHand(db, migrationsDir);
+    if (!countHand.ok) {
+      return {
+        ok: false,
+        reason: "count-hand-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+      };
+    }
+
+    const requireFarm = ensureRequireFarm(db, migrationsDir);
+    if (!requireFarm.ok) {
+      return {
+        ok: false,
+        reason: "require-farm-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+        requireFarm,
+      };
+    }
+
+    const backupStatus = ensureBackupStatus(db, migrationsDir);
+    if (!backupStatus.ok) {
+      return {
+        ok: false,
+        reason: "backup-status-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+        requireFarm,
+        backupStatus,
+      };
+    }
+
+    const backupDownload = ensureBackupDownload(db, migrationsDir);
+    if (!backupDownload.ok) {
+      return {
+        ok: false,
+        reason: "backup-download-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+        requireFarm,
+        backupStatus,
+        backupDownload,
+      };
+    }
+
+    const gradeDraw = ensureGradeDraw(db, migrationsDir);
+    if (!gradeDraw.ok) {
+      return {
+        ok: false,
+        reason: "grade-draw-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+        requireFarm,
+        backupStatus,
+        backupDownload,
+        gradeDraw,
+      };
+    }
+    return {
+      ok: true,
+      dbPath,
+      added,
+      recorded,
+      miscountAdded,
+      miscountRecorded: miscountRecord.recorded,
+      customersAdded: customers.added,
+      customersRecorded: customers.recorded,
+      countHandAdded: countHand.added,
+      countHandRecorded: countHand.recorded,
+      requireFarmAdded: requireFarm.added,
+      requireFarmRecorded: requireFarm.recorded,
+      backupStatusAdded: backupStatus.added,
+      backupStatusRecorded: backupStatus.recorded,
+      backupDownloadAdded: backupDownload.added,
+      backupDownloadRecorded: backupDownload.recorded,
+      gradeDrawAdded: gradeDraw.added,
+      gradeDrawRecorded: gradeDraw.recorded,
+      gradeDrawLinked: gradeDraw.linked,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+module.exports = {
+  SIZE_COLOR_MIGRATION,
+  MISCOUNT_MIGRATION,
+  CUSTOMERS_MIGRATION,
+  COUNT_HAND_MIGRATION,
+  REQUIRE_FARM_MIGRATION,
+  BACKUP_STATUS_MIGRATION,
+  BACKUP_DOWNLOAD_MIGRATION,
+  GRADE_DRAW_MIGRATION,
+  sqlitePathFromDatabaseUrl,
+  ensureSqliteSchema,
+};
+
+if (require.main === module) {
+  const result = ensureSqliteSchema(process.env.DATABASE_URL);
+  if (!result.ok) {
+    console.error("[start] schema ensure failed", result.reason || "");
+    process.exit(1);
+  }
+  process.exit(0);
+}
