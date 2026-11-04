@@ -255,6 +255,50 @@ function voidReasonText(reason: string | undefined, fallback: string) {
   return trimmed || fallback;
 }
 
+function bucketWhere(row: {
+  action: string;
+  farmId: string | null;
+  customerId: string | null;
+  sizeId: string;
+  gradeId: string;
+}) {
+  return {
+    voidedAt: null,
+    action: row.action,
+    farmId: row.farmId,
+    customerId: row.customerId,
+    sizeId: row.sizeId,
+    gradeId: row.gradeId,
+  };
+}
+
+/** Voiding a positive count after a take-away must not push that size and grade below zero. */
+async function voidWouldGoNegative(ids: string[]): Promise<string | null> {
+  const rows = await prisma.countRecord.findMany({ where: { id: { in: ids }, voidedAt: null } });
+  const groups = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const key = [row.action, row.farmId || "", row.customerId || "", row.sizeId, row.gradeId].join("|");
+    const list = groups.get(key) ?? [];
+    list.push(row);
+    groups.set(key, list);
+  }
+  for (const list of groups.values()) {
+    const removing = list.reduce((sum, row) => sum + (row.quantity || 1), 0);
+    if (removing <= 0) continue;
+    const sample = list[0];
+    const live = await prisma.countRecord.findMany({
+      where: bucketWhere(sample),
+      select: { quantity: true },
+    });
+    const current = live.reduce((sum, row) => sum + (row.quantity || 1), 0);
+    if (current - removing < 0) {
+      const place = sample.farmName || sample.customerName || "that list";
+      return `Voiding that would leave ${sample.sizeName} ${sample.gradeName} at ${place} below zero. Void a take-away first.`;
+    }
+  }
+  return null;
+}
+
 export async function voidCount(idOrSync: { id?: string; clientSyncId?: string }, reason?: string) {
   const where = idOrSync.id
     ? { id: idOrSync.id }
@@ -265,6 +309,8 @@ export async function voidCount(idOrSync: { id?: string; clientSyncId?: string }
   const row = await prisma.countRecord.findUnique({ where });
   if (!row) return { ok: false as const, error: "Count not found." };
   if (row.voidedAt) return { ok: true as const, already: true, id: row.id };
+  const blocked = await voidWouldGoNegative([row.id]);
+  if (blocked) return { ok: false as const, error: blocked };
   const updated = await prisma.countRecord.update({
     where: { id: row.id },
     data: { voidedAt: new Date(), voidReason: voidReasonText(reason, "Undo last count") },
@@ -286,6 +332,8 @@ export async function voidCounts(ids: string[], reason?: string) {
   const unique = [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))];
   if (unique.length === 0) return { ok: false as const, error: "No counts selected." };
   if (unique.length > MAX_BATCH_VOID) return { ok: false as const, error: "Too many counts selected." };
+  const blocked = await voidWouldGoNegative(unique);
+  if (blocked) return { ok: false as const, error: blocked };
   const result = await prisma.countRecord.updateMany({
     where: { id: { in: unique }, voidedAt: null },
     data: { voidedAt: new Date(), voidReason: voidReasonText(reason, "Admin correction") },
@@ -314,6 +362,9 @@ export function publicCount(row: {
   voidReason: string | null;
   correctionNote: string | null;
   correctedAt: Date | null;
+  adjustmentDirection?: string | null;
+  adjustedByAdminId?: string | null;
+  adjustedByName?: string | null;
 }) {
   return {
     countId: row.id,
@@ -336,5 +387,8 @@ export function publicCount(row: {
     voidReason: row.voidReason,
     correctionNote: row.correctionNote,
     correctedAt: row.correctedAt?.toISOString() ?? null,
+    adjustmentDirection: row.adjustmentDirection ?? null,
+    adjustedByAdminId: row.adjustedByAdminId ?? null,
+    adjustedByName: row.adjustedByName ?? null,
   };
 }

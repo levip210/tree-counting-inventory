@@ -122,6 +122,12 @@ model CountRecord {
   voidReason     String?
   correctionNote String?
   correctedAt    DateTime?
+  /// "add" or "remove" when an admin used the number pad. Null on a tap.
+  adjustmentDirection String?
+  /// Admin account that entered the adjustment. Null on a tap.
+  adjustedByAdminId   String?
+  /// Admin name at the time of the adjustment. Null on a tap.
+  adjustedByName      String?
 
   @@index([customerId])
 }

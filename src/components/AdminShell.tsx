@@ -11,6 +11,7 @@ const LINKS = [
   ["/admin/grades", "Grades"],
   ["/admin/counters", "Counter access"],
   ["/admin/history", "Count history"],
+  ["/admin/adjust", "Number pad"],
   ["/admin/inventory", "Starting inventory"],
   ["/admin/export", "Excel export"],
   ["/admin/backups", "Backups"],

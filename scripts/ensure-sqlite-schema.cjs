@@ -20,6 +20,7 @@ const REQUIRE_FARM_MIGRATION = "20261008170000_require_farm";
 const BACKUP_STATUS_MIGRATION = "20261016140000_backup_status";
 const BACKUP_DOWNLOAD_MIGRATION = "20261016153000_backup_download";
 const GRADE_DRAW_MIGRATION = "20261026210000_grade_draws_from";
+const COUNT_ADJUSTMENT_MIGRATION = "20261103120000_admin_count_adjustment";
 
 // Keep this UPDATE identical to prisma/migrations/20261026210000_grade_draws_from/migration.sql.
 // It fills an empty link only. It does not rename grades or rewrite counts.
@@ -280,6 +281,30 @@ function ensureBackupDownload(db, migrationsDir) {
   return { ok: ready, added, recorded };
 }
 
+function ensureCountAdjustment(db, migrationsDir) {
+  const sqlPath = path.join(migrationsDir, COUNT_ADJUSTMENT_MIGRATION, "migration.sql");
+  const columns = [
+    ["adjustmentDirection", `ALTER TABLE "CountRecord" ADD COLUMN "adjustmentDirection" TEXT`],
+    ["adjustedByAdminId", `ALTER TABLE "CountRecord" ADD COLUMN "adjustedByAdminId" TEXT`],
+    ["adjustedByName", `ALTER TABLE "CountRecord" ADD COLUMN "adjustedByName" TEXT`],
+  ];
+  let added = false;
+  if (tableExists(db, "CountRecord")) {
+    for (const [column, ddl] of columns) {
+      added = addColumnIfMissing(db, "CountRecord", column, ddl) || added;
+    }
+  }
+  const names = tableExists(db, "CountRecord") ? columnNames(db, "CountRecord") : [];
+  const ready = !tableExists(db, "CountRecord") || columns.every(([column]) => names.includes(column));
+  let recorded = false;
+  if (ready && tableExists(db, "CountRecord")) {
+    recorded = recordMigration(db, { name: COUNT_ADJUSTMENT_MIGRATION, sqlPath }).recorded;
+    if (added) console.log("[start] added count adjustment columns without changing existing counts");
+    if (recorded) console.log("[start] recorded prisma migration", COUNT_ADJUSTMENT_MIGRATION);
+  }
+  return { ok: ready, added, recorded };
+}
+
 function ensureSqliteSchema(databaseUrl, options = {}) {
   const cwd = options.cwd || process.cwd();
   const migrationsDir = options.migrationsDir || path.join(cwd, "prisma", "migrations");
@@ -418,6 +443,25 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
         gradeDraw,
       };
     }
+
+    const countAdjustment = ensureCountAdjustment(db, migrationsDir);
+    if (!countAdjustment.ok) {
+      return {
+        ok: false,
+        reason: "count-adjustment-still-missing",
+        dbPath,
+        added,
+        recorded,
+        miscountAdded,
+        customers,
+        countHand,
+        requireFarm,
+        backupStatus,
+        backupDownload,
+        gradeDraw,
+        countAdjustment,
+      };
+    }
     return {
       ok: true,
       dbPath,
@@ -438,6 +482,8 @@ function ensureSqliteSchema(databaseUrl, options = {}) {
       gradeDrawAdded: gradeDraw.added,
       gradeDrawRecorded: gradeDraw.recorded,
       gradeDrawLinked: gradeDraw.linked,
+      countAdjustmentAdded: countAdjustment.added,
+      countAdjustmentRecorded: countAdjustment.recorded,
     };
   } finally {
     db.close();
@@ -453,6 +499,7 @@ module.exports = {
   BACKUP_STATUS_MIGRATION,
   BACKUP_DOWNLOAD_MIGRATION,
   GRADE_DRAW_MIGRATION,
+  COUNT_ADJUSTMENT_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 };
