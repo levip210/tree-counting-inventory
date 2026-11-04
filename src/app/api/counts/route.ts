@@ -74,6 +74,6 @@ export async function DELETE(req: NextRequest) {
     return errorJson("Invalid request.", 400);
   }
   const result = await voidCount({ clientSyncId: body.clientSyncId }, "Undo last count");
-  if (!result.ok) return errorJson(result.error, 404);
+  if (!result.ok) return errorJson(result.error, result.error === "Count not found." ? 404 : 400);
   return json({ ok: true, already: result.already, id: result.id });
 }

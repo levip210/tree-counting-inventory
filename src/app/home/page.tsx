@@ -45,7 +45,7 @@ export default function HomePage() {
         {me?.role === "admin" ? (
           <button className="giant cream span-all" type="button" onClick={() => router.push("/admin")}>
             <b>Admin</b>
-            <span>Farms, customers, sizes, grades, counters, history, Excel export, backups.</span>
+            <span>Farms, customers, sizes, grades, number pad, counters, history, Excel export, backups.</span>
           </button>
         ) : null}
         <button className="giant muted span-all" type="button" onClick={() => void logout()}>

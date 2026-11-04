@@ -98,6 +98,9 @@ export default function DashboardClient() {
         <p style={{ marginTop: 12 }}>
           Today ({data?.stats.today} {data?.stats.timezone}): received {data?.stats.todayReceived ?? 0}, shipped {data?.stats.todayShipped ?? 0}.
         </p>
+        <p>
+          Missed a batch, or need to take some back? <Link href="/admin/adjust">Open the number pad</Link> to add or take away a size and grade in one step.
+        </p>
         <div className="hour-bar" title="Hourly activity today">
           {data?.stats.hourly.map((h) => (
             <i key={h.hour} style={{ height: `${((h.received + h.shipped) / maxHour) * 100}%` }} title={`${h.hour}:00 r${h.received} s${h.shipped}`} />

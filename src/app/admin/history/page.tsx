@@ -20,6 +20,8 @@ type Count = {
   voidedAt: string | null;
   voidReason: string | null;
   correctionNote: string | null;
+  adjustmentDirection?: "add" | "remove" | null;
+  adjustedByName?: string | null;
 };
 
 type PendingDelete = { ids: string[] };
@@ -31,6 +33,7 @@ export default function HistoryPage() {
   const [to, setTo] = useState("");
   const [q, setQ] = useState("");
   const [includeVoided, setIncludeVoided] = useState(false);
+  const [adjustmentsOnly, setAdjustmentsOnly] = useState(false);
   const [msg, setMsg] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
@@ -60,6 +63,7 @@ export default function HistoryPage() {
       if (to) params.set("to", to);
       if (q) params.set("q", q);
       if (includeVoided) params.set("includeVoided", "1");
+      if (adjustmentsOnly) params.set("adjustments", "1");
       const data = await api<{ counts: Count[] }>(`/api/admin/history?${params.toString()}`);
       setCounts(data.counts);
       const keep = new Set(data.counts.filter((c) => !c.voidedAt).map((c) => c.countId));
@@ -153,6 +157,7 @@ export default function HistoryPage() {
         <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
         <input placeholder="Search size/grade/farm/customer" value={q} onChange={(e) => setQ(e.target.value)} />
         <label><input type="checkbox" checked={includeVoided} onChange={(e) => setIncludeVoided(e.target.checked)} /> Include voided</label>
+        <label><input type="checkbox" checked={adjustmentsOnly} onChange={(e) => setAdjustmentsOnly(e.target.checked)} /> Adjustments only</label>
         <button className="btn gold" type="button" onClick={() => void load()}>Filter</button>
       </div>
       <div className="history-actions">
@@ -208,7 +213,15 @@ export default function HistoryPage() {
                 </td>
                 <td><code>{c.countId.slice(0, 8)}</code></td>
                 <td>{c.timestamp}</td>
-                <td>{c.action}</td>
+                <td>
+                  {c.action}
+                  {c.adjustmentDirection ? (
+                    <div>
+                      Admin {c.adjustmentDirection === "remove" ? "take away" : "add"}
+                      {c.adjustedByName ? ` · ${c.adjustedByName}` : ""}
+                    </div>
+                  ) : null}
+                </td>
                 <td>{c.farmName || ""}</td>
                 <td>{c.customerName || ""}</td>
                 <td>{c.sizeName}</td>

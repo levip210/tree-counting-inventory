@@ -18,6 +18,7 @@ export async function GET(req: NextRequest) {
   const to = url.searchParams.get("to") || "";
   const includeVoided = url.searchParams.get("includeVoided") === "1";
   const q = url.searchParams.get("q")?.trim().toLowerCase() || "";
+  const adjustmentsOnly = url.searchParams.get("adjustments") === "1";
   const take = Math.min(200, Number(url.searchParams.get("take") || 100));
 
   const rows = await prisma.countRecord.findMany({
@@ -27,6 +28,7 @@ export async function GET(req: NextRequest) {
       ...(farmId ? { farmId } : {}),
       ...(sizeId ? { sizeId } : {}),
       ...(gradeId ? { gradeId } : {}),
+      ...(adjustmentsOnly ? { adjustmentDirection: { not: null } } : {}),
     },
     orderBy: { timestampUtc: "desc" },
     take,
@@ -35,7 +37,7 @@ export async function GET(req: NextRequest) {
     if (from && row.timestampLocal.slice(0, 10) < from) return false;
     if (to && row.timestampLocal.slice(0, 10) > to) return false;
     if (!q) return true;
-    const hay = `${row.farmName || ""} ${row.customerName || ""} ${row.sizeName} ${row.gradeName} ${row.action} ${row.id}`.toLowerCase();
+    const hay = `${row.farmName || ""} ${row.customerName || ""} ${row.sizeName} ${row.gradeName} ${row.action} ${row.id} ${row.adjustmentDirection || ""} ${row.adjustedByName || ""}`.toLowerCase();
     return hay.includes(q);
   });
   return json({ counts: filtered.map(publicCount) });

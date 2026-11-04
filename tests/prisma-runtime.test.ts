@@ -17,6 +17,7 @@ import {
   BACKUP_STATUS_MIGRATION,
   BACKUP_DOWNLOAD_MIGRATION,
   GRADE_DRAW_MIGRATION,
+  COUNT_ADJUSTMENT_MIGRATION,
   sqlitePathFromDatabaseUrl,
   ensureSqliteSchema,
 } from "../scripts/ensure-sqlite-schema.cjs";
@@ -402,6 +403,12 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
       VALUES ('admin-keep','Levi','levi@example.com','hash',datetime('now'),datetime('now'))`);
     db.exec(`INSERT INTO "CounterAccount" ("id","accountLabel","pinHash","pinKey","active","access","createdAt","updatedAt")
       VALUES ('counter-keep','Yard','hash','key-keep',1,'both',datetime('now'),datetime('now'))`);
+    db.exec(`INSERT INTO "CountSession" ("id","action","startedAt") VALUES ('sess-keep','Yard Received',datetime('now'))`);
+    db.exec(`INSERT INTO "CountRecord" (
+      "id","timestampLocal","timestampUtc","action","farmId","farmName","sizeId","sizeName","gradeId","gradeName","quantity","sessionId","clientSyncId"
+    ) VALUES (
+      'count-keep','2026-10-01T10:00:00.000-04:00',datetime('now'),'Yard Received','farm-keep','Home farm','size-keep','6-7 ft','grade-keep','Premium',4,'sess-keep','sync-keep'
+    )`);
     db.close();
 
     const result = spawnSync(process.execPath, [migrateScript], {
@@ -511,6 +518,30 @@ test("prisma-migrate.cjs applies size_color on a prod-like volume db", () => {
       .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
       .get(GRADE_DRAW_MIGRATION);
     assert.ok(gradeDrawApplied);
+    const countCols = check.prepare(`PRAGMA table_info("CountRecord")`).all().map((c: { name: string }) => c.name);
+    assert.ok(countCols.includes("adjustmentDirection"));
+    assert.ok(countCols.includes("adjustedByAdminId"));
+    assert.ok(countCols.includes("adjustedByName"));
+    const keptCount = check
+      .prepare(
+        `SELECT quantity, farmName, sizeName, adjustmentDirection, adjustedByName FROM "CountRecord" WHERE id = 'count-keep'`,
+      )
+      .get() as {
+      quantity: number;
+      farmName: string;
+      sizeName: string;
+      adjustmentDirection: string | null;
+      adjustedByName: string | null;
+    };
+    assert.equal(keptCount.quantity, 4);
+    assert.equal(keptCount.farmName, "Home farm");
+    assert.equal(keptCount.sizeName, "6-7 ft");
+    assert.equal(keptCount.adjustmentDirection, null);
+    assert.equal(keptCount.adjustedByName, null);
+    const adjustmentApplied = check
+      .prepare(`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name = ?`)
+      .get(COUNT_ADJUSTMENT_MIGRATION);
+    assert.ok(adjustmentApplied);
     check.close();
   } finally {
     rmSync(dest, { recursive: true, force: true });
@@ -704,4 +735,89 @@ test("grade draw migration links Scale free to #1 once and does not rename", () 
   rmSync(dir, { recursive: true, force: true });
   rmSync(ambiguous, { recursive: true, force: true });
   rmSync(exact, { recursive: true, force: true });
+});
+
+test("count adjustment migration only adds nullable columns and keeps existing counts", () => {
+  const sql = readFileSync(join(process.cwd(), "prisma/migrations", COUNT_ADJUSTMENT_MIGRATION, "migration.sql"), "utf8");
+  assert.match(sql, /ADD COLUMN "adjustmentDirection" TEXT/);
+  assert.match(sql, /ADD COLUMN "adjustedByAdminId" TEXT/);
+  assert.match(sql, /ADD COLUMN "adjustedByName" TEXT/);
+  const executable = sql
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("--"))
+    .join("\n");
+  assert.doesNotMatch(executable, /\b(DROP|DELETE|UPDATE|INSERT)\b/i);
+  assert.doesNotMatch(sql, /force-reset|accept-data-loss/i);
+
+  const dir = mkdtempSync(join(tmpdir(), "ptf-adjust-col-"));
+  const dbPath = join(dir, "app.db");
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE "TreeSize" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "displayOrder" INTEGER NOT NULL DEFAULT 0,
+      "active" BOOLEAN NOT NULL DEFAULT true,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL
+    );
+    CREATE TABLE "CountRecord" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "quantity" INTEGER NOT NULL,
+      "farmName" TEXT,
+      "gradeName" TEXT
+    );
+    INSERT INTO "TreeSize" VALUES ('size-1', '6-7 ft', 0, 1, datetime('now'), datetime('now'));
+    INSERT INTO "CountRecord" VALUES ('count-1', 12, 'Kilby', '#1');
+    CREATE TABLE "AppSettings" ("id" TEXT NOT NULL PRIMARY KEY);
+    INSERT INTO "AppSettings" VALUES ('default');
+  `);
+  db.close();
+
+  const first = ensureSqliteSchema(`file:${dbPath}`);
+  assert.equal(first.ok, true);
+  assert.equal(first.countAdjustmentAdded, true);
+  assert.equal(first.countAdjustmentRecorded, true);
+  const check = new DatabaseSync(dbPath);
+  const cols = check.prepare(`PRAGMA table_info("CountRecord")`).all().map((c: { name: string }) => c.name);
+  assert.ok(cols.includes("adjustmentDirection"));
+  assert.ok(cols.includes("adjustedByAdminId"));
+  assert.ok(cols.includes("adjustedByName"));
+  const kept = check.prepare(`SELECT quantity, farmName, gradeName, adjustmentDirection, adjustedByName FROM "CountRecord"`).get() as {
+    quantity: number;
+    farmName: string;
+    gradeName: string;
+    adjustmentDirection: string | null;
+    adjustedByName: string | null;
+  };
+  assert.equal(kept.quantity, 12);
+  assert.equal(kept.farmName, "Kilby");
+  assert.equal(kept.gradeName, "#1");
+  assert.equal(kept.adjustmentDirection, null);
+  assert.equal(kept.adjustedByName, null);
+  const recorded = check
+    .prepare(`SELECT COUNT(*) AS n FROM "_prisma_migrations" WHERE migration_name = ?`)
+    .get(COUNT_ADJUSTMENT_MIGRATION) as { n: number };
+  assert.equal(recorded.n, 1);
+  check.close();
+
+  const second = ensureSqliteSchema(`file:${dbPath}`);
+  assert.equal(second.ok, true);
+  assert.equal(second.countAdjustmentAdded, false);
+  assert.equal(second.countAdjustmentRecorded, false);
+  const again = new DatabaseSync(dbPath);
+  const still = again.prepare(`SELECT quantity, farmName, adjustmentDirection FROM "CountRecord"`).get() as {
+    quantity: number;
+    farmName: string;
+    adjustmentDirection: string | null;
+  };
+  const stillRecorded = again
+    .prepare(`SELECT COUNT(*) AS n FROM "_prisma_migrations" WHERE migration_name = ?`)
+    .get(COUNT_ADJUSTMENT_MIGRATION) as { n: number };
+  assert.equal(still.quantity, 12);
+  assert.equal(still.farmName, "Kilby");
+  assert.equal(still.adjustmentDirection, null);
+  assert.equal(stillRecorded.n, 1);
+  again.close();
+  rmSync(dir, { recursive: true, force: true });
 });

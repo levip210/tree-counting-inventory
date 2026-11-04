@@ -72,6 +72,10 @@ export type BackupCount = {
   voidReason: string | null;
   correctionNote: string | null;
   correctedAt: string | null;
+  /** Null on a tap and on backups saved before the admin number pad. */
+  adjustmentDirection: "add" | "remove" | null;
+  adjustedByAdminId: string | null;
+  adjustedByName: string | null;
 };
 
 export type BackupMiscount = {
@@ -272,6 +276,10 @@ export async function buildBackupDocument(now = new Date()): Promise<BackupDocum
       voidReason: row.voidReason,
       correctionNote: row.correctionNote,
       correctedAt: iso(row.correctedAt),
+      adjustmentDirection:
+        row.adjustmentDirection === "add" || row.adjustmentDirection === "remove" ? row.adjustmentDirection : null,
+      adjustedByAdminId: row.adjustedByAdminId,
+      adjustedByName: row.adjustedByName,
     })),
     miscounts: miscounts.map((row) => ({
       id: row.id,
@@ -401,6 +409,17 @@ function optDrawId(row: Record<string, unknown>, label: string): string | null |
   if (!value) return null;
   if (value.length > 200) return fail(`${label} has a drawsFromGradeId that is too long.`);
   return value;
+}
+
+function optAdjustmentDirection(
+  row: Record<string, unknown>,
+  label: string,
+): "add" | "remove" | null | ParseResult {
+  if (!("adjustmentDirection" in row) || row.adjustmentDirection == null || row.adjustmentDirection === "") return null;
+  if (row.adjustmentDirection !== "add" && row.adjustmentDirection !== "remove") {
+    return fail(`${label} has an invalid adjustmentDirection.`);
+  }
+  return row.adjustmentDirection;
 }
 
 function optDate(row: Record<string, unknown>, key: string, label: string): string | null | ParseResult {
@@ -676,6 +695,21 @@ export function parseBackupDocument(input: unknown): ParseResult {
     if (isFail(correctionNote)) return correctionNote;
     const correctedAt = optDate(row, "correctedAt", label);
     if (isFail(correctedAt)) return correctedAt;
+    const adjustmentDirection = optAdjustmentDirection(row, label);
+    if (isFail(adjustmentDirection)) return adjustmentDirection;
+    const adjustedByAdminId = optString(row, "adjustedByAdminId", label);
+    if (isFail(adjustedByAdminId)) return adjustedByAdminId;
+    const adjustedByName = optString(row, "adjustedByName", label);
+    if (isFail(adjustedByName)) return adjustedByName;
+    if (adjustmentDirection === "add" && quantity <= 0) {
+      return fail(`${label} add adjustment must have a positive quantity.`);
+    }
+    if (adjustmentDirection === "remove" && quantity >= 0) {
+      return fail(`${label} take-away adjustment must have a negative quantity.`);
+    }
+    if (!adjustmentDirection && (adjustedByAdminId || adjustedByName)) {
+      return fail(`${label} names an adjuster without saying add or take away.`);
+    }
     counts.push({
       id,
       timestampLocal,
@@ -698,6 +732,9 @@ export function parseBackupDocument(input: unknown): ParseResult {
       voidReason,
       correctionNote,
       correctedAt,
+      adjustmentDirection,
+      adjustedByAdminId,
+      adjustedByName,
     });
   }
   const countDup = uniqueIds(counts.map((row) => row.id), "count");
@@ -961,6 +998,9 @@ export async function restoreBackupDocument(doc: BackupDocument): Promise<void> 
             voidReason: row.voidReason,
             correctionNote: row.correctionNote,
             correctedAt: row.correctedAt ? new Date(row.correctedAt) : null,
+            adjustmentDirection: row.adjustmentDirection,
+            adjustedByAdminId: row.adjustedByAdminId,
+            adjustedByName: row.adjustedByName,
           })),
         }),
       );
